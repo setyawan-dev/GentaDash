@@ -1,0 +1,671 @@
+var FONNTE_TOKEN = "nsWgt78eeg71MhdAPkkT";
+var SPREADSHEET_ID = "14G5xLi7_v-DZzk6yyPEZGZJZFne_Lw68CbS-9MU8LME";
+var DEFAULT_BOT_NUMBER = ""; // Opsional: isi 628xxx jika ingin mengunci nomor bot
+
+// =======================================================================
+// JALANKAN FUNGSI INI 1X DI EDITOR GAS (KLIK RUN) UNTUK OTORISASI IZIN
+// =======================================================================
+function authorizeAndInit() {
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  ensureSystemSetup(ss);
+  setupJadwalLaporanOtomatis();
+  var props = PropertiesService.getScriptProperties();
+  var bot = getBotWhatsAppNumber(props);
+  Logger.log("Inisialisasi & Otorisasi Berhasil! Bot WA: " + (bot || "Belum terdeteksi"));
+}
+
+function jsonResponse(obj, p) {
+  var jsonStr = JSON.stringify(obj);
+  if (p && p.callback) {
+    var safeCb = String(p.callback).replace(/[^a-zA-Z0-9_$.]/g, '');
+    return ContentService.createTextOutput(safeCb + "(" + jsonStr + ");")
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+  return ContentService.createTextOutput(jsonStr)
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function ensureSystemSetup(ss) {
+  var statusSheet = ss.getSheetByName("Status_Alat");
+  if (!statusSheet) {
+    statusSheet = ss.insertSheet("Status_Alat");
+    statusSheet.appendRow([
+      "Update Terakhir", "Status Koneksi", "Suhu (°C)", "Kelembapan (%)", 
+      "VPD (kPa)", "Tekanan (hPa)", "Baterai (V)", "Arus (mA)", 
+      "Kebisingan (dB)", "Status AI / Hama", "Status Radar", 
+      "Lampu UV", "Speaker", "Mode Kontrol", "HST / Tanam", "Heartbeat Epoch"
+    ]);
+    statusSheet.getRange("A1:P1").setFontWeight("bold").setBackground("#1f2937").setFontColor("white");
+    statusSheet.appendRow([
+      "-", "DISCONNECTED", "-", "-", "-", "-", "-", "-", "-", "Aman", "AMAN", "OFF", "OFF", "AUTO", "-", "0"
+    ]);
+  }
+}
+
+function setupJadwalLaporanOtomatis() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === "kirimLaporan12Jam") {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  // Jadwal Otomatis Pagi 06:00 WIB
+  ScriptApp.newTrigger("kirimLaporan12Jam")
+    .timeBased()
+    .everyDays(1)
+    .atHour(6)
+    .nearMinute(0)
+    .inTimezone("Asia/Jakarta")
+    .create();
+
+  // Jadwal Otomatis Sore 18:00 WIB
+  ScriptApp.newTrigger("kirimLaporan12Jam")
+    .timeBased()
+    .everyDays(1)
+    .atHour(18)
+    .nearMinute(0)
+    .inTimezone("Asia/Jakarta")
+    .create();
+}
+
+// =======================================================================
+// DETEKSI OTOMATIS NOMOR BOT WHATSAPP DARI FONNTE
+// =======================================================================
+function getBotWhatsAppNumber(props) {
+  var botNo = props.getProperty("BOT_WA_NUMBER") || DEFAULT_BOT_NUMBER;
+  if (botNo) return String(botNo).replace(/[^0-9]/g, '');
+
+  try {
+    var res = UrlFetchApp.fetch("https://api.fonnte.com/device", {
+      "method": "post",
+      "headers": { "Authorization": FONNTE_TOKEN },
+      "muteHttpExceptions": true
+    });
+    var json = JSON.parse(res.getContentText());
+    var detected = json.device || (json.data && json.data.device) || "";
+    detected = String(detected).replace(/[^0-9]/g, '');
+    if (detected.indexOf("0") === 0) detected = "62" + detected.substring(1);
+    if (detected && detected.length >= 10) {
+      props.setProperty("BOT_WA_NUMBER", detected);
+      return detected;
+    }
+  } catch (e) {}
+  return "";
+}
+
+// =======================================================================
+// FORMATTER STATUS TERKINI & MENU SHORTCUT 1-KLIK
+// =======================================================================
+function buildCurrentStatusReport(ss) {
+  var st = getLiveSystemState(ss);
+  var teks = "📊 *STATUS & KONDISI LAHAN TERKINI*\n\n";
+  teks += "🔌 *Koneksi Alat:* " + st.connLabel + "\n";
+  teks += "🕒 *Update Terakhir:* " + st.updatedAt + "\n";
+  if (st.hst && st.hst !== "-") teks += "🌱 *Fase Tanam:* " + st.hst + " HST\n";
+  teks += "\n";
+
+  if (st.temp !== "-" && st.temp !== "--") {
+    var vpdVal = parseFloat(st.vpd);
+    var kondisiLingkungan = "Optimal";
+    if (!isNaN(vpdVal)) {
+      if (vpdVal < 0.4) kondisiLingkungan = "Terlalu Lembap (Risiko Jamur)";
+      else if (vpdVal > 1.6) kondisiLingkungan = "Kering / Stres Panas";
+    }
+
+    teks += "🌡️ *Suhu Udara:* " + st.temp + " °C\n";
+    teks += "💧 *Kelembapan:* " + st.hum + " %\n";
+    teks += "🌿 *VPD & Lingkungan:* " + st.vpd + " kPa (" + kondisiLingkungan + ")\n";
+    teks += "🌬️ *Tekanan Udara:* " + st.press + " hPa\n";
+    teks += "🔋 *Tegangan Baterai:* " + st.batt + " V (" + st.current + " mA)\n";
+    teks += "🔊 *Kebisingan Lahan:* " + st.sound + " dB\n";
+    teks += "🦅 *Deteksi Hama (AI):* " + st.ai + "\n";
+    teks += "📡 *Status Radar 360°:* " + st.radar + "\n\n";
+  } else {
+    teks += "⚠️ *Data Sensor:* Belum ada pembacaan masuk ke database.\n";
+    teks += "_Pastikan perangkat ESP32-S3 menyala dan terhubung ke jaringan._\n\n";
+  }
+
+  teks += "⚙️ *Status Aktuator & Mode:*\n";
+  teks += "• Mode Kontrol: *" + st.mode + "*\n";
+  teks += "• Lampu UV Perangkap: *" + st.uv + "*\n";
+  teks += "• Speaker Pengusir: *" + st.spk + "*";
+
+  return teks;
+}
+
+function buildCommandMenuText(ss) {
+  var st = getLiveSystemState(ss);
+  var props = PropertiesService.getScriptProperties();
+  var botNo = getBotWhatsAppNumber(props);
+
+  var menu = "\n\n⚡ *MENU SHORTCUT KONTROL (TINGGAL KLIK)*\n";
+  menu += "Mode Aktif: *" + st.mode + "* | Laporan Auto: *06:00 & 18:00 WIB*\n";
+
+  if (botNo) {
+    var base = "https://wa.me/" + botNo + "?text=";
+    menu += "\n📊 *Minta Informasi Sewaktu-waktu:*\n";
+    menu += "• Cek Status & Sensor Live:\n  " + base + "STATUS\n";
+    menu += "• Minta Laporan Rangkuman Sekarang:\n  " + base + "LAPORAN\n";
+
+    menu += "\n🎛️ *Kontrol Aktuator & Mode:*\n";
+    menu += "• 💡 Lampu UV ON: " + base + "LAMPU%20ON\n";
+    menu += "• 🌑 Lampu UV OFF: " + base + "LAMPU%20OFF\n";
+    menu += "• 🔊 Speaker ON: " + base + "SPEAKER%20ON\n";
+    menu += "• 🔇 Speaker OFF: " + base + "SPEAKER%20OFF\n";
+    menu += "• 🛠️ Mode Manual: " + base + "MODE%20MANUAL\n";
+    menu += "• 🤖 Mode Otomatis: " + base + "MODE%20AUTO";
+  } else {
+    menu += "\nBalas kata kunci: *STATUS* | *LAPORAN* | *LAMPU ON* | *LAMPU OFF* | *SPEAKER ON* | *SPEAKER OFF* | *MODE MANUAL* | *MODE AUTO*";
+  }
+  return menu;
+}
+
+// =======================================================================
+// HELPER STATUS KONEKSI & DATABASE REAL-TIME
+// =======================================================================
+function getLiveSystemState(ss) {
+  ensureSystemSetup(ss);
+  var statusSheet = ss.getSheetByName("Status_Alat");
+  var row = statusSheet.getRange(2, 1, 1, 16).getDisplayValues()[0];
+  var rawEpoch = Number(statusSheet.getRange(2, 16).getValue()) || 0;
+  var nowMs = Date.now();
+  
+  var isConnected = (rawEpoch > 0) && ((nowMs - rawEpoch) <= 65000);
+  var connText = isConnected ? "CONNECTED" : "DISCONNECTED";
+  
+  if (row[1] !== connText) {
+    statusSheet.getRange(2, 2).setValue(connText);
+  }
+  
+  return {
+    updatedAt: row[0],
+    connected: isConnected,
+    connLabel: isConnected ? "🟢 CONNECTED (Online)" : "🔴 DISCONNECTED (Offline)",
+    temp: row[2],
+    hum: row[3],
+    vpd: row[4],
+    press: row[5],
+    batt: row[6],
+    current: row[7],
+    sound: row[8],
+    ai: row[9],
+    radar: row[10],
+    uv: row[11],
+    spk: row[12],
+    mode: row[13],
+    hst: row[14],
+    lastEpoch: rawEpoch
+  };
+}
+
+function updateLiveSystemState(ss, p, saveToHistory) {
+  ensureSystemSetup(ss);
+  var statusSheet = ss.getSheetByName("Status_Alat");
+  var cur = statusSheet.getRange(2, 1, 1, 16).getDisplayValues()[0];
+  var now = new Date();
+  var timestamp = Utilities.formatDate(now, "GMT+7", "dd/MM/yyyy HH:mm:ss");
+  var nowMs = now.getTime();
+
+  var connStatus = (p.conn === "DISCONNECTED") ? "DISCONNECTED" : "CONNECTED";
+  var epochToSave = (connStatus === "CONNECTED") ? nowMs : (Number(cur[15]) || 0);
+
+  function pickVal(incoming, fallback) {
+    if (incoming !== undefined && incoming !== null && incoming !== "" && incoming !== "--" && incoming !== "-") {
+      return String(incoming);
+    }
+    return fallback;
+  }
+
+  var temp = pickVal(p.temp, cur[2]);
+  var hum = pickVal(p.hum, cur[3]);
+  var vpd = pickVal(p.vpd, cur[4]);
+  var press = pickVal(p.press, cur[5]);
+  var batt = pickVal(p.batt, cur[6]);
+  var current = pickVal(p.current, cur[7]);
+  var sound = pickVal(p.sound, cur[8]);
+  var ai = pickVal(p.fan || p.hama || p.ai, cur[9]);
+  var radar = (p.radar !== undefined) ? (p.radar == "1" || String(p.radar).toUpperCase() == "TERDETEKSI" ? "TERDETEKSI" : "AMAN") : cur[10];
+  var uv = (p.uv !== undefined) ? (p.uv == "1" || String(p.uv).toUpperCase() == "ON" ? "ON" : "OFF") : cur[11];
+  var spk = (p.spk !== undefined) ? (p.spk == "1" || String(p.spk).toUpperCase() == "ON" ? "ON" : "OFF") : cur[12];
+  var mode = (p.manual !== undefined) ? (p.manual == "1" || String(p.manual).toUpperCase() == "MANUAL" ? "MANUAL" : "AUTO") : cur[13];
+  var hst = pickVal(p.hst, cur[14]);
+
+  statusSheet.getRange(2, 1, 1, 16).setValues([[
+    timestamp, connStatus, temp, hum, vpd, press, batt, current, sound, ai, radar, uv, spk, mode, hst, epochToSave
+  ]]);
+
+  var isForcePush = (p.force == "1");
+  if (saveToHistory && ((connStatus === "CONNECTED" && temp !== "-") || isForcePush)) {
+    var sheet = ss.getSheetByName("Log_Sensor");
+    if (!sheet) {
+      sheet = ss.insertSheet("Log_Sensor");
+      sheet.appendRow([
+        "Timestamp", "Suhu (°C)", "Kelembapan (%)", "VPD (kPa)", "Tekanan (hPa)", 
+        "Baterai (V)", "Arus (mA)", "Kebisingan (dB)", "Status AI / Hama", "Status Radar", "Status Koneksi"
+      ]);
+      sheet.getRange("A1:K1").setFontWeight("bold").setBackground("#3563e9").setFontColor("white");
+    }
+    sheet.appendRow([
+      timestamp, temp, hum, vpd, press, batt, current, sound, ai, radar, connStatus
+    ]);
+  }
+}
+
+// =======================================================================
+// HTTP GET: MENDUKUNG JSON & JSONP (ANTI-CORS FAILED TO FETCH)
+// =======================================================================
+function doGet(e) {
+  var p = (e && e.parameter) ? e.parameter : {};
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    ensureSystemSetup(ss);
+    var cmd = p.cmd;
+    var props = PropertiesService.getScriptProperties();
+
+    if (cmd == "log" || cmd == "log_sensor") {
+      updateLiveSystemState(ss, p, true);
+      return jsonResponse({ status: "ok", action: "log" }, p);
+    }
+    else if (cmd == "sync_state" || cmd == "status_conn") {
+      updateLiveSystemState(ss, p, false);
+      return jsonResponse({ status: "ok", action: "sync_state" }, p);
+    }
+    else if (cmd == "save_config") {
+      if (p.plantDate !== undefined) props.setProperty("PLANT_DATE", String(p.plantDate));
+      if (p.hst !== undefined) updateLiveSystemState(ss, { hst: p.hst, conn: p.conn || "CONNECTED" }, false);
+      return jsonResponse({ status: "ok", plantDate: props.getProperty("PLANT_DATE") || "" }, p);
+    }
+    else if (cmd == "get_config") {
+      var st = getLiveSystemState(ss);
+      return jsonResponse({
+        status: "ok",
+        plantDate: props.getProperty("PLANT_DATE") || "",
+        uv: st.uv,
+        spk: st.spk,
+        mode: st.mode,
+        connected: st.connected
+      }, p);
+    }
+    else if (cmd == "send_wa") {
+      var msg = p.msg || "Notifikasi Genta-IoT";
+      var resWa = kirimWhatsAppFonnte(ss, msg);
+      return jsonResponse({ status: "ok", fonnte: resWa }, p);
+    }
+    else if (cmd == "get_cmd") {
+      var pendingEsp = props.getProperty("PENDING_CMD_ESP") || "NONE";
+      props.setProperty("PENDING_CMD_ESP", "NONE");
+      return ContentService.createTextOutput(pendingEsp);
+    }
+    else if (cmd == "get_cmd_web") {
+      var pendingWeb = props.getProperty("PENDING_CMD_WEB") || "NONE";
+      props.setProperty("PENDING_CMD_WEB", "NONE");
+      return jsonResponse({ status: "ok", cmd: pendingWeb }, p);
+    }
+    else if (cmd == "set_wa") {
+      var newNo = String(p.no || "").replace(/[^0-9]/g, '');
+      if (newNo.indexOf("0") === 0) newNo = "62" + newNo.substring(1);
+
+      if (p.conn !== undefined) {
+        updateLiveSystemState(ss, p, false);
+      }
+
+      var stored = props.getProperty("WA_NUMBERS");
+      var arr = stored ? JSON.parse(stored) : [];
+      if (newNo && arr.indexOf(newNo) === -1) { arr.push(newNo); }
+      props.setProperty("WA_NUMBERS", JSON.stringify(arr));
+
+      // Pesan 1: Sambutan & Verifikasi Pendaftaran
+      var pesanSambutan = "🌾 *SELAMAT DATANG DI GENTA-IOT*\n" +
+        "✅ *Verifikasi Nomor Berhasil!*\n\n" +
+        "Halo! Nomor Anda (*" + newNo + "*) telah terdaftar sebagai penerima resmi sistem pemantauan & pengendalian hama pertanian otomatis *GentaDash*.\n\n" +
+        "📌 *Layanan yang Aktif untuk Nomor Ini:*\n" +
+        "• 🚨 Peringatan dini otomatis saat hama terdeteksi Radar 360° / AI\n" +
+        "• 🕕 Laporan rangkuman lahan otomatis setiap pukul *06:00 & 18:00 WIB*\n" +
+        "• ⚡ Permintaan status *real-time* & kontrol aktuator jarak jauh\n\n" +
+        "_Berikut kami kirimkan kondisi lahan terkini beserta menu shortcut kontrol Anda:_";
+
+      var resWelcome = kirimWhatsAppFonnteRaw(ss, newNo, pesanSambutan);
+      Utilities.sleep(1000);
+
+      // Pesan 2: Laporan Status Terkini + Shortcut Menu 1-Klik
+      var pesanStatusTerkini = buildCurrentStatusReport(ss);
+      var resStatus = kirimWhatsAppFonnteSingle(ss, newNo, pesanStatusTerkini);
+
+      var waSent = true;
+      var waReason = "OK";
+      try {
+        var parsed1 = JSON.parse(resWelcome);
+        var parsed2 = JSON.parse(resStatus);
+        if (parsed1.status === false || parsed2.status === false) {
+          waSent = false;
+          waReason = parsed1.reason || parsed2.reason || "Fonnte menolak pengiriman";
+        }
+      } catch (errParse) {}
+
+      return jsonResponse({
+        status: "ok",
+        numbers: arr,
+        waSent: waSent,
+        waReason: waReason
+      }, p);
+    }
+    else if (cmd == "del_wa") {
+      var delNo = String(p.no || "").replace(/[^0-9]/g, '');
+      var stored = props.getProperty("WA_NUMBERS");
+      var arr = stored ? JSON.parse(stored) : [];
+      var idx = arr.indexOf(delNo);
+      if (idx !== -1) { arr.splice(idx, 1); }
+      props.setProperty("WA_NUMBERS", JSON.stringify(arr));
+      return jsonResponse({ status: "ok", numbers: arr }, p);
+    }
+    else if (cmd == "get_wa") {
+      var stored = props.getProperty("WA_NUMBERS");
+      var list = stored ? JSON.parse(stored) : [];
+      return jsonResponse(list, p);
+    }
+    else if (cmd == "test_report" || cmd == "send_report_now") {
+      var resReport = kirimLaporan12Jam("Permintaan Manual Dashboard");
+      return jsonResponse({ status: "ok", fonnte: resReport }, p);
+    }
+    else if (cmd == "setup_schedule") {
+      setupJadwalLaporanOtomatis();
+      return jsonResponse({ status: "ok", schedule: "06:00 & 18:00 WIB" }, p);
+    }
+
+    return jsonResponse({ status: "ok", message: "Genta-IoT Webhook Active" }, p);
+  } catch (err) {
+    return jsonResponse({ status: "error", message: err.message }, p);
+  }
+}
+
+// =======================================================================
+// WEBHOOK POST: MENERIMA KLIK SHORTCUT / PERINTAH DARI WHATSAPP
+// =======================================================================
+function doPost(e) {
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  ensureSystemSetup(ss);
+  var props = PropertiesService.getScriptProperties();
+  var timestamp = Utilities.formatDate(new Date(), "GMT+7", "dd/MM/yyyy HH:mm:ss");
+  
+  try {
+    var pesanMsk = "";
+    var sender = "";
+    var deviceNo = "";
+    
+    if (e.postData && e.postData.contents) {
+      try {
+        var data = JSON.parse(e.postData.contents);
+        pesanMsk = data.message || data.text || data.button_id || "";
+        sender = data.sender || "";
+        deviceNo = data.device || "";
+      } catch (err) {
+        pesanMsk = (e.parameter && (e.parameter.message || e.parameter.text)) || "";
+        sender = (e.parameter && e.parameter.sender) || "";
+        deviceNo = (e.parameter && e.parameter.device) || "";
+      }
+    } else if (e.parameter) {
+      pesanMsk = e.parameter.message || e.parameter.text || "";
+      sender = e.parameter.sender || "";
+      deviceNo = e.parameter.device || "";
+    }
+
+    deviceNo = String(deviceNo).replace(/[^0-9]/g, '');
+    if (deviceNo && deviceNo.length >= 10) {
+      props.setProperty("BOT_WA_NUMBER", deviceNo);
+    }
+    
+    var cmdText = String(pesanMsk).toUpperCase().trim();
+    sender = String(sender).replace(/[^0-9]/g, '');
+    
+    catatWebhookLog(ss, timestamp, sender, cmdText, "DITERIMA");
+    
+    if (!sender || !cmdText) {
+      return ContentService.createTextOutput(JSON.stringify({"status": true})).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var st = getLiveSystemState(ss);
+    
+    if (cmdText == "1" || cmdText == "STATUS" || cmdText.indexOf("CEK STATUS") !== -1) {
+      kirimWhatsAppFonnteSingle(ss, sender, buildCurrentStatusReport(ss));
+    } 
+    else if (cmdText == "2" || cmdText == "LAMPU ON" || cmdText == "UV ON") {
+      props.setProperty("PENDING_CMD_ESP", "UV_ON");
+      props.setProperty("PENDING_CMD_WEB", "UV_ON");
+      updateLiveSystemState(ss, { uv: "ON", manual: "MANUAL", conn: st.connected ? "CONNECTED" : "DISCONNECTED" }, false);
+      
+      var msgUvOn = "💡 *LAMPU UV: ON* (Mode: *MANUAL*)\nPerintah menyalakan Lampu UV telah dikirim.";
+      if (!st.connected) msgUvOn += "\n⚠️ _Alat sedang DISCONNECTED, perintah masuk antrean._";
+      kirimWhatsAppFonnteSingle(ss, sender, msgUvOn);
+    } 
+    else if (cmdText == "3" || cmdText == "LAMPU OFF" || cmdText == "UV OFF") {
+      props.setProperty("PENDING_CMD_ESP", "UV_OFF");
+      props.setProperty("PENDING_CMD_WEB", "UV_OFF");
+      updateLiveSystemState(ss, { uv: "OFF", manual: "MANUAL", conn: st.connected ? "CONNECTED" : "DISCONNECTED" }, false);
+      
+      var msgUvOff = "🌑 *LAMPU UV: OFF* (Mode: *MANUAL*)\nPerintah mematikan Lampu UV telah dikirim.";
+      if (!st.connected) msgUvOff += "\n⚠️ _Alat sedang DISCONNECTED, perintah masuk antrean._";
+      kirimWhatsAppFonnteSingle(ss, sender, msgUvOff);
+    } 
+    else if (cmdText == "4" || cmdText == "SPEAKER ON" || cmdText == "SUARA ON") {
+      props.setProperty("PENDING_CMD_ESP", "SPK_ON");
+      props.setProperty("PENDING_CMD_WEB", "SPK_ON");
+      updateLiveSystemState(ss, { spk: "ON", manual: "MANUAL", conn: st.connected ? "CONNECTED" : "DISCONNECTED" }, false);
+      
+      var msgSpkOn = "🔊 *SPEAKER AKUSTIK: ON* (Mode: *MANUAL*)\nSpeaker pengusir hama diaktifkan selama 1 menit.";
+      if (!st.connected) msgSpkOn += "\n⚠️ _Alat sedang DISCONNECTED, perintah masuk antrean._";
+      kirimWhatsAppFonnteSingle(ss, sender, msgSpkOn);
+    } 
+    else if (cmdText == "5" || cmdText == "SPEAKER OFF" || cmdText == "SUARA OFF") {
+      props.setProperty("PENDING_CMD_ESP", "SPK_OFF");
+      props.setProperty("PENDING_CMD_WEB", "SPK_OFF");
+      updateLiveSystemState(ss, { spk: "OFF", conn: st.connected ? "CONNECTED" : "DISCONNECTED" }, false);
+      
+      var msgSpkOff = "🔇 *SPEAKER AKUSTIK: OFF*\nPerintah mematikan Speaker pengusir hama telah dikirim.";
+      if (!st.connected) msgSpkOff += "\n⚠️ _Alat sedang DISCONNECTED, perintah masuk antrean._";
+      kirimWhatsAppFonnteSingle(ss, sender, msgSpkOff);
+    }
+    else if (cmdText == "MANUAL" || cmdText == "MODE MANUAL") {
+      props.setProperty("PENDING_CMD_ESP", "MODE_MANUAL");
+      props.setProperty("PENDING_CMD_WEB", "MODE_MANUAL");
+      updateLiveSystemState(ss, { manual: "MANUAL", conn: st.connected ? "CONNECTED" : "DISCONNECTED" }, false);
+      kirimWhatsAppFonnteSingle(ss, sender, "🛠️ *MODE MANUAL AKTIF*\nKendali aktuator diambil alih oleh pengguna.");
+    }
+    else if (cmdText == "AUTO" || cmdText == "MODE AUTO" || cmdText == "OTOMATIS") {
+      props.setProperty("PENDING_CMD_ESP", "MODE_AUTO");
+      props.setProperty("PENDING_CMD_WEB", "MODE_AUTO");
+      updateLiveSystemState(ss, { manual: "AUTO", conn: st.connected ? "CONNECTED" : "DISCONNECTED" }, false);
+      kirimWhatsAppFonnteSingle(ss, sender, "🤖 *MODE OTOMATIS AKTIF*\nSistem kembali ke kendali otonom Sensor Fusion AI & jadwal UV malam.");
+    }
+    else if (cmdText == "6" || cmdText == "LAPORAN" || cmdText.indexOf("LAPORAN") !== -1) {
+      var laporanText = generateLaporan12JamText(ss, "Permintaan Manual via WhatsApp");
+      kirimWhatsAppFonnteSingle(ss, sender, laporanText);
+    }
+    else if (cmdText == "MENU" || cmdText == "HELP" || cmdText == "TES" || cmdText == "HI" || cmdText == "HALO") {
+      kirimWhatsAppFonnteSingle(ss, sender, "👋 Halo! *GentaBot* aktif.\n🔌 *Status Alat:* " + st.connLabel);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({"status": true})).setMimeType(ContentService.MimeType.JSON);
+    
+  } catch (err) {
+    catatWebhookLog(ss, timestamp, "ERROR", err.message, "GAGAL");
+    return ContentService.createTextOutput(JSON.stringify({"status": false, "error": err.message})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// =======================================================================
+// LAPORAN RANGKUMAN OTOMATIS (06:00 & 18:00 WIB) & SEWAKTU-WAKTU
+// =======================================================================
+function parseIndoTimestamp(tsStr) {
+  if (tsStr instanceof Date) return tsStr.getTime();
+  var s = String(tsStr).trim();
+  var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (m) {
+    var iso = m[3] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[1]).slice(-2) + "T" +
+              ("0" + m[4]).slice(-2) + ":" + m[5] + ":" + m[6] + "+07:00";
+    return new Date(iso).getTime();
+  }
+  var parsed = Date.parse(s);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function generateLaporan12JamText(ss, triggerSource) {
+  var st = getLiveSystemState(ss);
+  var sheet = ss.getSheetByName("Log_Sensor");
+  var now = new Date();
+  var jamSekarang = Number(Utilities.formatDate(now, "GMT+7", "H"));
+  var sesiLabel = triggerSource
+    ? triggerSource
+    : ((jamSekarang >= 5 && jamSekarang < 12)
+        ? "Laporan Terjadwal Pagi (Sesi Malam 18:00 – 06:00 WIB)"
+        : "Laporan Terjadwal Sore (Sesi Siang 06:00 – 18:00 WIB)");
+  var waktuLaporan = Utilities.formatDate(now, "GMT+7", "dd/MM/yyyy HH:mm") + " WIB";
+
+  var teks = "📋 *LAPORAN MONITORING LAHAN GENTA-IOT*\n";
+  teks += "🗓️ *" + sesiLabel + "*\n";
+  teks += "🕒 *Waktu:* " + waktuLaporan + "\n";
+  teks += "🔌 *Status Alat:* " + st.connLabel + " | *Mode:* " + st.mode + "\n";
+  if (st.hst && st.hst !== "-") teks += "🌱 *Fase Pertumbuhan:* " + st.hst + " HST\n";
+  teks += "\n";
+
+  if (!sheet || sheet.getLastRow() <= 1) {
+    teks += "⚠️ Belum ada riwayat data sensor yang tercatat dalam 12 jam terakhir.";
+    return teks;
+  }
+
+  var lastRow = sheet.getLastRow();
+  var values = sheet.getRange(2, 1, lastRow - 1, 10).getDisplayValues();
+  var cutoffMs = now.getTime() - (12 * 60 * 60 * 1000);
+
+  var temps = [], hums = [], vpds = [], batts = [], currs = [], sounds = [];
+  var countBurung = 0, countTikus = 0, countRadar = 0, totalLogs = 0;
+
+  for (var i = 0; i < values.length; i++) {
+    var r = values[i];
+    var rowMs = parseIndoTimestamp(r[0]);
+    if (rowMs >= cutoffMs) {
+      totalLogs++;
+      var t = parseFloat(r[1]); if (!isNaN(t)) temps.push(t);
+      var h = parseFloat(r[2]); if (!isNaN(h)) hums.push(h);
+      var v = parseFloat(r[3]); if (!isNaN(v)) vpds.push(v);
+      var b = parseFloat(r[5]); if (!isNaN(b)) batts.push(b);
+      var c = parseFloat(r[6]); if (!isNaN(c)) currs.push(c);
+      var s = parseFloat(r[7]); if (!isNaN(s)) sounds.push(s);
+
+      var aiTxt = String(r[8]).toUpperCase();
+      if (aiTxt.indexOf("BURUNG") !== -1) countBurung++;
+      if (aiTxt.indexOf("TIKUS") !== -1 || aiTxt.indexOf("HEWAN") !== -1) countTikus++;
+      if (String(r[9]).toUpperCase() === "TERDETEKSI") countRadar++;
+    }
+  }
+
+  if (totalLogs === 0) {
+    teks += "⚠️ Tidak ada sampel log dalam 12 jam terakhir.\n";
+    teks += "• Pembacaan Terakhir (" + st.updatedAt + "): Suhu " + st.temp + "°C, Kelembapan " + st.hum + "%, Baterai " + st.batt + "V.";
+    return teks;
+  }
+
+  function stats(arr, dec) {
+    if (arr.length === 0) return { avg: "-", min: "-", max: "-" };
+    var sum = 0, mn = arr[0], mx = arr[0];
+    for (var j = 0; j < arr.length; j++) {
+      sum += arr[j];
+      if (arr[j] < mn) mn = arr[j];
+      if (arr[j] > mx) mx = arr[j];
+    }
+    return {
+      avg: (sum / arr.length).toFixed(dec),
+      min: mn.toFixed(dec),
+      max: mx.toFixed(dec)
+    };
+  }
+
+  var sTemp = stats(temps, 1);
+  var sHum = stats(hums, 1);
+  var sVpd = stats(vpds, 2);
+  var sBatt = stats(batts, 2);
+  var sCurr = stats(currs, 1);
+  var sSnd = stats(sounds, 1);
+
+  teks += "📊 *Ringkasan Mikroklimat (" + totalLogs + " sampel):*\n";
+  teks += "• 🌡️ Suhu: Rata-rata *" + sTemp.avg + " °C* (Min " + sTemp.min + "° / Maks " + sTemp.max + "°)\n";
+  teks += "• 💧 Kelembapan: Rata-rata *" + sHum.avg + " %* (Min " + sHum.min + "% / Maks " + sHum.max + "%)\n";
+  teks += "• 🌿 VPD Rata-rata: *" + sVpd.avg + " kPa*\n\n";
+
+  teks += "🔋 *Kesehatan Energi & Baterai:*\n";
+  if (batts.length > 0) {
+    teks += "• Tegangan: *" + batts[0].toFixed(2) + " V* ➔ *" + batts[batts.length - 1].toFixed(2) + " V* (Min " + sBatt.min + " V)\n";
+  }
+  teks += "• Arus Rata-rata: *" + sCurr.avg + " mA*\n\n";
+
+  teks += "🛡️ *Aktivitas Hama & Akustik (12 Jam):*\n";
+  teks += "• 🔊 Kebisingan: Rata-rata *" + sSnd.avg + " dB* (Puncak *" + sSnd.max + " dB*)\n";
+  teks += "• 🦅 Deteksi AI Burung: *" + countBurung + "x*\n";
+  teks += "• 🐀 Deteksi AI Tikus/Hewan: *" + countTikus + "x*\n";
+  teks += "• 📡 Pemicuan Radar 360°: *" + countRadar + "x*\n";
+  teks += "• ⚙️ Aktuator: UV *" + st.uv + "* | Speaker *" + st.spk + "*";
+
+  return teks;
+}
+
+function kirimLaporan12Jam(triggerSource) {
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var laporan = generateLaporan12JamText(ss, triggerSource || "");
+  return kirimWhatsAppFonnte(ss, laporan);
+}
+
+// =======================================================================
+// LOG & PENGIRIMAN WHATSAPP VIA FONNTE
+// =======================================================================
+function catatWebhookLog(ss, time, sender, msg, status) {
+  var logSheet = ss.getSheetByName("Webhook_Log");
+  if (!logSheet) {
+    logSheet = ss.insertSheet("Webhook_Log");
+    logSheet.appendRow(["Waktu", "Pengirim", "Pesan Masuk", "Status"]);
+  }
+  logSheet.appendRow([time, sender, msg, status]);
+}
+
+function kirimWhatsAppFonnteRaw(ss, number, messageText) {
+  var res = UrlFetchApp.fetch("https://api.fonnte.com/send", {
+    "method": "post",
+    "headers": { "Authorization": FONNTE_TOKEN },
+    "payload": { "target": number, "message": messageText },
+    "muteHttpExceptions": true
+  });
+  var body = res.getContentText();
+  var ts = Utilities.formatDate(new Date(), "GMT+7", "dd/MM/yyyy HH:mm:ss");
+  catatWebhookLog(ss, ts, number, "FONNTE_WELCOME", body);
+  return body;
+}
+
+function kirimWhatsAppFonnteSingle(ss, number, text) {
+  var fullMessage = text + buildCommandMenuText(ss);
+  var res = UrlFetchApp.fetch("https://api.fonnte.com/send", {
+    "method": "post",
+    "headers": { "Authorization": FONNTE_TOKEN },
+    "payload": { "target": number, "message": fullMessage },
+    "muteHttpExceptions": true
+  });
+  var body = res.getContentText();
+  var ts = Utilities.formatDate(new Date(), "GMT+7", "dd/MM/yyyy HH:mm:ss");
+  catatWebhookLog(ss, ts, number, "FONNTE_TX", body);
+  return body;
+}
+
+function kirimWhatsAppFonnte(ss, text) {
+  var stored = PropertiesService.getScriptProperties().getProperty("WA_NUMBERS");
+  var arr = stored ? JSON.parse(stored) : [];
+  if (arr.length === 0) return "NO_RECIPIENTS";
+
+  var fullMessage = text + buildCommandMenuText(ss);
+  var res = UrlFetchApp.fetch("https://api.fonnte.com/send", {
+    "method": "post",
+    "headers": { "Authorization": FONNTE_TOKEN },
+    "payload": { "target": arr.join(","), "message": fullMessage },
+    "muteHttpExceptions": true
+  });
+  var body = res.getContentText();
+  var ts = Utilities.formatDate(new Date(), "GMT+7", "dd/MM/yyyy HH:mm:ss");
+  catatWebhookLog(ss, ts, arr.join(","), "FONNTE_BROADCAST", body);
+  return body;
+}

@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GentaDash Smart Farm Monitoring</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.2/mqttws31.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a; --card-bg: #1e293b; --text-main: #f8fafc; --text-muted: #94a3b8;
+            --accent-green: #10b981; --accent-blue: #3b82f6; --danger: #ef4444; --warning: #f59e0b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-main); overflow-x: hidden; overflow-y: auto; }
+        .container { max-width: 500px; margin: 0 auto; padding: 15px; padding-bottom: 90px; }
+        .header { display: flex; justify-content: space-between; align-items: stretch; margin-bottom: 12px; background: rgba(30, 41, 59, 0.5); padding: 12px 15px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); position: relative; min-height: 90px; }
+        .header-left { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; width: 30%; z-index: 2;}
+        .rtc-time { font-size: 13px; font-weight: bold; color: var(--accent-green); font-family: monospace; letter-spacing: 1px; display: inline-block; text-align: left; }
+        .rtc-date { font-size: 9px; color: var(--text-muted); text-transform: uppercase; margin-top: 2px; letter-spacing: 0.5px; }
+        .rtc-timezone { font-size: 8px; color: var(--text-muted); margin-top: 2px; padding-top: 2px; border-top: 1px solid rgba(255,255,255,0.1); display: inline-block;}
+        .header-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; justify-content: center; width: 40%; z-index: 1;}
+        .header-center img { width: 70px; height: 70px; object-fit: contain; margin-bottom: 3px; }
+        .header-center h1 { margin: 0; font-size: 11px; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; text-align: center; white-space: nowrap;}
+        .header-right { display: flex; align-items: center; justify-content: flex-end; width: 30%; z-index: 2;}
+        .cellular-widget { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+        .net-type { font-size: 10px; font-weight: 700; color: var(--accent-blue); background: rgba(59,130,246,0.15); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(59,130,246,0.3); }
+        .signal-bars { display: flex; align-items: flex-end; gap: 2px; height: 16px; margin-top: 2px; }
+        .bar { width: 4px; background-color: #334155; border-radius: 2px; transition: all 0.3s ease; }
+        @keyframes sigPulse { 0% { opacity: 0.7; } 50% { opacity: 1; filter: drop-shadow(0 0 3px var(--accent-green)); } 100% { opacity: 0.7; } }
+        .bar.active { background-color: var(--accent-green); animation: sigPulse 2s infinite ease-in-out; }
+        .net-metrics { display: grid; grid-template-columns: 24px 6px auto; font-size: 9px; color: var(--text-muted); font-family: monospace; margin-top: 5px; line-height: 1.3; width: 100%; }
+        .net-metrics > div:nth-child(3n+1) { text-align: left; }
+        .net-metrics > div:nth-child(3n+2) { text-align: center; }
+        .net-metrics > div:nth-child(3n) { text-align: right; }
+        .bar:nth-child(1) { height: 4px; } .bar:nth-child(2) { height: 8px; }
+        .bar:nth-child(3) { height: 12px; } .bar:nth-child(4) { height: 16px; }
+
+        .cloud-status { text-align: center; font-size: 11px; padding: 8px; margin-bottom: 15px; border-radius: 8px; font-weight: bold; transition: 0.3s; }
+        .connected { background: rgba(16,185,129,0.2); color: var(--accent-green); border: 1px solid var(--accent-green); }
+        .disconnected { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid var(--danger); }
+        .warning { background: rgba(245,158,11,0.2); color: var(--warning); border: 1px solid var(--warning); }
+
+        .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(10px); display: flex; overflow-x: auto; white-space: nowrap; padding: 12px 10px; border-top: 1px solid #334155; z-index: 1000; scrollbar-width: none; }
+        .bottom-nav::-webkit-scrollbar { display: none; }
+        .bottom-nav button { background: transparent; color: var(--text-muted); border: none; font-size: 10px; font-weight: bold; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; transition: 0.3s; min-width: 65px; flex: 1; }
+        .bottom-nav button.active { color: var(--accent-green); }
+        .bottom-nav button .icon { font-size: 18px; margin-bottom: 2px;}
+
+        .tab-content { display: none; animation: fadeIn 0.3s ease; }
+        .tab-content.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .glass { background: var(--card-bg); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); padding: 15px; margin-bottom: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
+        
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+        
+        .card { padding: 10px; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); cursor: pointer; transition: transform 0.2s ease, background 0.2s ease; position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; }
+        .card:active { transform: scale(0.95); background: rgba(255,255,255,0.08); }
+        .card::after { content: '📈'; position: absolute; top: 6px; right: 6px; font-size: 8px; opacity: 0.3; }
+        .card h3 { font-size: 9px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .card .value { font-size: 14px; font-weight: bold; color: var(--text-main); word-wrap: break-word; }
+        .card.green { border-top: 2px solid var(--accent-green); }
+        .card.blue { border-top: 2px solid var(--accent-blue); }
+        .card.orange { border-top: 2px solid var(--warning); }
+        .card.no-graph { cursor: default; }
+        .card.no-graph:active { transform: none; background: rgba(255,255,255,0.03); }
+        .card.no-graph::after { display: none; }
+
+        .toggle-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.2); padding: 12px 15px; border-radius: 10px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.05); }
+        .toggle-title { font-size: 13px; font-weight: 600; }
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #334155; transition: .4s; border-radius: 24px; }
+        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent-green); }
+        input:checked + .slider:before { transform: translateX(20px); }
+        input:disabled + .slider { background-color: #1e293b; cursor: not-allowed; opacity: 0.4; }
+
+        input[type="date"], input[type="text"], input[type="number"], select { padding: 10px; border-radius: 8px; border: 1px solid #334155; width: 100%; margin-top: 5px; margin-bottom: 10px; background: #0f172a; color: white; }
+        .btn-act { background: #334155; border: none; padding: 10px; border-radius: 8px; color: white; cursor: pointer; font-size: 12px; font-weight: bold; width: 100%; }
+        .btn-act:active { background: var(--accent-green); color: #000; }
+        .btn-danger { background: rgba(239, 68, 68, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+        .btn-add { background: rgba(16, 185, 129, 0.2); color: var(--accent-green); border: 1px solid var(--accent-green); padding: 5px 10px; font-size: 11px;}
+        
+        .alert-box { padding: 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; margin-bottom: 10px; display: flex; flex-direction: column; border-left: 4px solid transparent; }
+        .alert-info { background: rgba(16, 185, 129, 0.1); border-left-color: var(--accent-green); }
+        .alert-warning { background: rgba(245, 158, 11, 0.1); border-left-color: var(--warning); }
+        .alert-danger { background: rgba(239, 68, 68, 0.1); border-left-color: var(--danger); transition: 0.3s; }
+        .alert-title { font-weight: 700; margin-bottom: 4px; font-size: 13px; display: flex; align-items: center; gap: 5px; }
+        @keyframes pulseAlert { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .alert-danger.active, .alert-warning.active { animation: pulseAlert 1.5s infinite; border: 1px solid var(--danger); }
+
+        .sensor-badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: bold; margin: 3px; }
+        .badge-ok { background: rgba(16, 185, 129, 0.2); color: var(--accent-green); border: 1px solid var(--accent-green); }
+        .badge-err { background: rgba(239, 68, 68, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+
+        progress { width: 100%; height: 12px; border-radius: 6px; appearance: none; margin-top: 10px; }
+        progress::-webkit-progress-bar { background-color: #334155; border-radius: 6px; }
+        progress::-webkit-progress-value { background-color: var(--accent-green); border-radius: 6px; }
+
+        .list-item { display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px; margin-bottom: 5px; border: 1px solid rgba(255,255,255,0.02); }
+        .list-item span { font-size: 12px; }
+        .del-btn { background: none; border: none; color: var(--danger); font-size: 14px; cursor: pointer; }
+
+        /* --- VISUALISASI RADAR 3D DESAIN BARU --- */
+        .radar-3d-container { position: relative; width: 100%; height: 280px; margin: 10px auto; background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; display: flex; justify-content: center; align-items: center; perspective: 1000px; overflow: hidden; box-shadow: inset 0 0 40px rgba(0,0,0,0.6); }
+        .radar-hud-text { position: absolute; top: 10px; left: 10px; display: flex; flex-direction: column; font-size: 9px; color: rgba(16, 185, 129, 0.75); font-family: monospace; text-align: left; z-index: 5; }
+        
+        .radar-base { position: relative; width: 280px; height: 280px; transform: rotateX(60deg) translateY(-20px); transform-style: preserve-3d; border-radius: 50%; border: 2px solid rgba(16, 185, 129, 0.8); box-shadow: 0 5px 30px rgba(16, 185, 129, 0.3), inset 0 0 20px rgba(16, 185, 129, 0.3); background: linear-gradient(90deg, transparent 49.5%, rgba(16, 185, 129, 0.5) 50%, transparent 50.5%), linear-gradient(0deg, transparent 49.5%, rgba(16, 185, 129, 0.5) 50%, transparent 50.5%); }
+        
+        /* GEOFENCE RADIUS RINGS */
+        .ring-min { position: absolute; top: 50%; left: 50%; width: 10%; height: 10%; transform: translate(-50%, -50%); border-radius: 50%; border: 1px dashed rgba(239, 68, 68, 0.6); pointer-events: none; }
+        .ring-max { position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; transform: translate(-50%, -50%); border-radius: 50%; border: 1px solid rgba(16, 185, 129, 0.4); pointer-events: none; }
+        .ring-label-min { position: absolute; top: 41%; left: 50%; transform: translate(-50%, -50%) rotateX(-60deg); font-size: 7px; color: rgba(239,68,68,0.8); font-family: monospace; font-weight: bold; }
+        .ring-label-max { position: absolute; top: 4%; left: 50%; transform: translate(-50%, -50%) rotateX(-60deg); font-size: 7px; color: rgba(16,185,129,0.8); font-family: monospace; font-weight: bold; }
+
+        .radar-sweep { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 50%; background: conic-gradient(from 0deg, rgba(16,185,129,0) 70%, rgba(16,185,129,0.85) 100%); animation: scan3d 3s linear infinite; }
+        @keyframes scan3d { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        
+        .radar-label { position: absolute; font-size: 12px; font-weight: bold; color: rgba(255,255,255,0.8); transform: translate(-50%, -50%) rotateX(-60deg); z-index: 5;}
+
+        /* --- PROGRESS BAR RADAR (ANIMASI MENYAMPING) --- */
+        .radar-log-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 10px;
+        }
+
+        .radar-sector-card {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .rs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-main);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 6px;
+        }
+
+        .rs-metric-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .rs-metric-title {
+            font-size: 9px;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .rs-metric-value {
+            font-size: 14px;
+            font-weight: bold;
+            font-family: monospace;
+        }
+
+        .rs-bar-bg {
+            width: 100%;
+            height: 6px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 3px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .rs-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s;
+            width: 0%;
+        }
+
+        /* Varian Warna Bar */
+        .bar-dist { background-color: var(--accent-blue); box-shadow: 0 0 8px rgba(59,130,246,0.4); }
+        .bar-eng { background-color: var(--danger); box-shadow: 0 0 8px rgba(239,68,68,0.4); }
+        .bar-stat { background-color: var(--warning); box-shadow: 0 0 8px rgba(245,158,11,0.4); }
+
+        .rs-badge {
+            font-size: 8px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.1);
+            color: var(--text-muted);
+        }
+        .rs-badge.active {
+            background: rgba(239,68,68,0.2);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+        
+        /* BLIP OBJEK BERDASARKAN WARNA KLASIFIKASI */
+        .radar-blip { position: absolute; width: 12px; height: 12px; border-radius: 50%; display: none; transform: translate(-50%, -50%) rotateX(-60deg); animation: pulseBlip 0.8s infinite alternate; z-index: 10; }
+        .radar-blip::after { content: ''; position: absolute; top: -10px; left: -10px; right: -10px; bottom: -10px; border: 1px solid currentColor; border-radius: 50%; animation: rippleBlip 1s infinite linear; }
+        
+        .blip-manusia { background: var(--accent-blue); color: var(--accent-blue); box-shadow: 0 0 14px 5px var(--accent-blue); }
+        .blip-hewan { background: var(--warning); color: var(--warning); box-shadow: 0 0 14px 5px var(--warning); }
+        .blip-burung { background: var(--danger); color: var(--danger); box-shadow: 0 0 14px 5px var(--danger); }
+        
+        @keyframes pulseBlip { from { transform: translate(-50%, -50%) rotateX(-60deg) scale(1); opacity: 1; } to { transform: translate(-50%, -50%) rotateX(-60deg) scale(1.4); opacity: 0.85; } }
+        @keyframes rippleBlip { 0% { transform: scale(0.3); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); z-index: 2000; justify-content: center; align-items: center; padding: 20px; animation: fadeIn 0.2s ease; }
+        .modal-content { background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; width: 100%; max-width: 500px; padding: 20px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        .close-btn { position: absolute; top: 15px; right: 15px; background: none; border: none; color: white; font-size: 24px; cursor: pointer; opacity: 0.7; }
+        .close-btn:hover { opacity: 1; }
+        .chart-container { position: relative; height: 250px; width: 100%; margin-top: 15px; }
+
+        .web-serial-box { background: #000; color: #00ff00; font-family: monospace; font-size: 10px; padding: 10px; border-radius: 8px; height: 220px; overflow-y: auto; text-align: left; margin-top: 10px; border: 1px solid rgba(0,255,0,0.3); line-height: 1.4; white-space: pre-wrap; word-break: break-all; }
+        
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- HEADER -->
+        <div class="header">
+            <div class="header-left">
+                <div class="rtc-time" id="rtcTime">--:--:--</div>
+                <div class="rtc-date" id="rtcDate">Menunggu RTC...</div>
+                <div class="rtc-timezone" id="rtcZone"></div>
+            </div>
+            <div class="header-center">
+                <img src="GENTA.png" alt="Logo Genta">
+                <h1>Smart Agriculture Monitoring</h1>
+            </div>
+            <div class="header-right">
+                <div class="cellular-widget" title="SIMCOM A7670 Cellular Status">
+                    <span class="net-type" id="cellNetType">4G LTE</span>
+                    <div class="signal-bars">
+                        <div class="bar" id="bar1"></div>
+                        <div class="bar" id="bar2"></div>
+                        <div class="bar" id="bar3"></div>
+                        <div class="bar" id="bar4"></div>
+                    </div>
+                    <div class="net-metrics">
+                        <div>RSSI</div><div>:</div><div id="cellSpeed">--</div>
+                        <div style="color: var(--accent-blue);">Lat</div><div style="color: var(--accent-blue);">:</div><div id="cellLat" style="color: var(--accent-blue);">-- ms</div>
+                        <div style="color: var(--danger);">Loss</div><div style="color: var(--danger);">:</div><div id="cellLoss" style="color: var(--danger);">0.0%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="cloudStatus" class="cloud-status disconnected">🔴 Menghubungkan ke Sistem...</div>
+
+        <!-- TAB 1: FARM -->
+        <div id="tab1" class="tab-content active">
+            <div class="glass">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h2 style="font-size: 15px;">Penjadwalan & Logbook</h2>
+                    <button class="btn-act" onclick="bukaLogbook()" style="width:auto; padding:6px 10px; background:rgba(59,130,246,0.2); color:var(--accent-blue); border:1px solid var(--accent-blue);">📊 Buka Log</button>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <input type="date" id="plantDate" onchange="calcHST()" style="flex: 1; margin: 0;">
+                    <button class="btn-act btn-danger" onclick="resetFaseTanam()" style="margin: 0; width: auto;">Reset</button>
+                </div>
+                <div style="margin-top: 15px;">
+                    <h3 style="font-size: 13px;">Progres: <span id="hstValue" style="color: var(--accent-green);">- HST</span></h3>
+                    <progress id="farmProgress" value="0" max="120"></progress>
+                </div>
+                <button class="btn-act" onclick="forceSimpanManual()" style="margin-top:15px; background:rgba(59,130,246,0.2); color:var(--accent-blue); border:1px solid var(--accent-blue);">
+                    📥 Simpan Log Manual
+                </button>
+                <div id="messageCenter" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
+                    <h3 style="font-size: 13px; margin-bottom: 8px; color: var(--text-muted);">Pusat Notifikasi</h3>
+                    
+                    <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+                        <h3 style="font-size: 11px; margin-bottom: 8px; color: var(--text-muted);">Status Sensors:</h3>
+                        <div id="sensorHealthBox">
+                            <span id="badgeBME" class="sensor-badge badge-err">BME280: Waiting</span>
+                            <span id="badgeINA" class="sensor-badge badge-err">INA219: Waiting</span>
+                            <span id="badgeMIC" class="sensor-badge badge-err">MIC I2S: Waiting</span>
+                            <span id="badgeRAD" class="sensor-badge badge-err">RADAR: Waiting</span>
+                        </div>
+                    </div>
+
+                    <div class="alert-box alert-info"><span class="alert-title">🌱 Fase Tanam</span><span id="farmAdvice">Pilih tanggal tanam.</span></div>
+                    <div class="alert-box alert-warning"><span class="alert-title">📱 Telegram Bot</span><span>Sistem Notifikasi Ready.</span></div>
+                    <div class="alert-box alert-danger" id="msgHamaAlert" style="opacity: 0.5;"><span class="alert-title">🚨 Pest Control</span><span id="pestAdvice">Waiting Sensor Data...</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 2: DASHBOARD FULL SENSOR RAW KESEHATAN SISTEM -->
+        <div id="tab2" class="tab-content">
+            <div class="glass" style="padding: 12px;">
+                <h3 style="font-size: 11px; margin-bottom: 8px; color: var(--accent-green);">Microclimate Monitoring</h3>
+                <div class="grid-3">
+                    <div class="card green" onclick="openChart('temp', 'Suhu', '°C', '#10b981')">
+                        <h3>Suhu (°C)</h3><div class="value" id="valTemp">--</div>
+                    </div>
+                    <div class="card blue" onclick="openChart('hum', 'Kelembapan', '%', '#3b82f6')">
+                        <h3>Kelembapan (%)</h3><div class="value" id="valHum">--</div>
+                    </div>
+                    <div class="card orange" onclick="openChart('vpd', 'VPD', 'kPa', '#f59e0b')">
+                        <h3>VPD (kPa)</h3><div class="value" id="valVpd">--</div>
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <div class="card green" onclick="openChart('press', 'Tekanan Udara', 'hPa', '#10b981')">
+                        <h3>Tekanan Udara (hPa)</h3><div class="value" id="valPress">--</div>
+                    </div>
+                    <div class="card green" onclick="openChart('alt', 'Ketinggian', 'm', '#10b981')">
+                        <h3>Altitude (m)</h3><div class="value" id="valAlt">--</div>
+                    </div>
+                </div>
+
+                <h3 style="font-size: 11px; margin-bottom: 8px; color: var(--warning); margin-top: 15px;">DAYA LISTRIK</h3>
+                <div class="grid-4">
+                    <div class="card green" onclick="openChart('batt', 'Tegangan Bus', 'V', '#10b981')">
+                        <h3>Bus (V)</h3><div class="value" id="valBatt">--</div>
+                    </div>
+                    <div class="card orange no-graph">
+                        <h3>Shunt(mV)</h3><div class="value" id="valShunt">--</div>
+                    </div>
+                    <div class="card green" onclick="openChart('current', 'Arus Listrik', 'mA', '#10b981')">
+                        <h3>Arus(mA)</h3><div class="value" id="valCurrent">--</div>
+                    </div>
+                    <div class="card orange" onclick="openChart('power', 'Konsumsi Daya', 'mW', '#f59e0b')">
+                        <h3>Daya(mW)</h3><div class="value" id="valPower">--</div>
+                    </div>
+                </div>
+
+                <h3 style="font-size: 11px; margin-bottom: 8px; color: var(--accent-blue); margin-top: 15px;">JARINGAN</h3>
+                <div class="grid-2">
+                    <div class="card no-graph">
+                        <h3>IP Address</h3><div class="value" id="valIp" style="font-size:12px;">--</div>
+                    </div>
+                    <div class="card no-graph">
+                        <h3>Waktu NTP</h3><div class="value" id="valNtp" style="font-size:12px;">--</div>
+                    </div>
+                    <div class="card no-graph">
+                        <h3>GNSS</h3>
+                        <div class="value" id="valGps" style="font-size:10px; font-family:monospace; line-height:1.4; color:var(--text-muted);">Menunggu Satelit...</div>
+                    </div>
+                    <div class="card no-graph">
+                        <h3>LBS Koordinat</h3>
+                        <div class="value" id="valLbs" style="font-size:10px; font-family:monospace; line-height:1.4; color:var(--text-muted);">--</div>
+                    </div>
+                </div>
+                
+                <h3 style="font-size: 11px; margin-bottom: 8px; color: var(--danger); margin-top: 15px;">PEST DETECTION</h3>
+                <div class="grid-2">
+                    <div class="card blue no-graph">
+                        <h3>Waktu Aktif (Up)</h3><div class="value" id="valUptime" style="font-size: 13px;">--:--:--</div>
+                    </div>
+                    <div class="card blue" onclick="openChart('ai', 'Tingkat Ancaman Hama', 'Level', '#ef4444')">
+                        <h3>Identifikasi Hama</h3><div class="value" id="valAiStatus" style="font-size: 11px; color: var(--accent-green);">Standby</div>
+                    </div>
+                </div>
+                
+                <div class="card blue" style="display: flex; flex-direction: row; justify-content: space-between; align-items: center;" onclick="openChart('sound', 'Kebisingan Akustik', 'dB', '#8b5cf6')">
+                    <div>
+                        <h3>Microphone (dB)</h3>
+                        <div style="display: flex; align-items: baseline; gap: 4px;">
+                            <div class="value" id="valSound" style="font-size: 20px;">--</div><span style="font-size: 11px;">dB</span>
+                        </div>
+                    </div>
+                    <div id="valMicClass" style="font-size: 11px; color:var(--text-muted); text-align: right;">--</div>
+                </div>
+            </div>
+
+            <!-- VISUALISASI RADAR 3D -->
+            <div class="glass" style="text-align: center;">
+                <h3 style="margin-bottom: 5px; font-size: 13px; color: var(--accent-green);">Radar Scanner</h3>
+                <p style="font-size:9px; color:var(--text-muted); margin-bottom:10px;">Pemetaan spasial hama berbasis gelombang mikro</p>
+                
+                <div class="radar-3d-container">
+                    <div class="radar-hud-text">
+                        <span>SYS: ONLINE</span>
+                        <span>FREQ: 24GHz</span>
+                        <span>FOV: 360°</span>
+                        <span id="radarDistance">MAX RANGE: 800 cm</span>
+                    </div>
+                    <div class="radar-base">
+                        <!-- Geofence Rings -->
+                        <div class="ring-max"></div>
+                        <div class="ring-min"></div>
+                        <div class="ring-label-max">8M</div>
+                        <div class="ring-label-min">30CM</div>
+                        
+                        <div class="radar-sweep"></div>
+                        <div class="radar-label" style="top: 10%; left: 50%;">U</div>
+                        <div class="radar-label" style="top: 50%; left: 90%;">T</div>
+                        <div class="radar-label" style="top: 90%; left: 50%;">S</div>
+                        <div class="radar-label" style="top: 50%; left: 10%;">B</div>
+                        
+                        <div class="radar-blip" id="blip0"></div>
+                        <div class="radar-blip" id="blip1"></div>
+                        <div class="radar-blip" id="blip2"></div>
+                        <div class="radar-blip" id="blip3"></div>
+                    </div>
+                </div>
+                
+                <h4 id="radarStatusText" style="color: var(--accent-green); font-size: 11px; margin-top: 12px; margin-bottom: 12px; text-transform: uppercase;">Scanning Area... (Aman)</h4>
+                
+                <!-- INDIKATOR RADAR DIPERBARUI -->
+                <div class="grid-3" style="margin-bottom:12px; text-align: left;">
+                    <div class="card no-graph" style="padding: 8px;">
+                        <h3 style="font-size: 8px;">Objek Terdeteksi</h3>
+                        <div class="value" id="radState" style="font-size:10px; color:var(--accent-green);">KOSONG</div>
+                    </div>
+                    <div class="card no-graph" style="padding: 8px;">
+                        <h3 style="font-size: 8px;">Posisi Koordinat</h3>
+                        <div style="font-size:9px; color:var(--text-muted); margin-top:2px; line-height:1.4;">
+                            Jarak: <span id="radDistM" style="color:white; font-weight:bold;">0 cm</span><br>
+                            Sektor: <span id="radDistS" style="color:white; font-weight:bold;">--</span>
+                        </div>
+                    </div>
+                    <div class="card no-graph" style="padding: 8px;">
+                        <h3 style="font-size: 8px;">Nilai Energi</h3>
+                        <div style="font-size:9px; color:var(--text-muted); margin-top:2px; line-height:1.4;">
+                            Energi: <span id="radNrgM" style="color:var(--danger); font-weight:bold;">0</span><br>
+                            Status: <span id="radNrgS" style="color:white; font-weight:bold;">Aman</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- LOG 4 SEKTOR RADAR (UBAHAN PROGRESS BAR) -->
+                <div style="text-align: left; margin-top: 12px;">
+                    <h3 style="font-size: 11px; color: var(--accent-green); margin-bottom: 8px; text-transform: uppercase;">📡 Log Sektor Radar:</h3>
+                    <div id="radarSectorContainer" class="radar-log-container">
+                        <!-- Baris akan dirender oleh JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: DIAGNOSTIK & KONTROL -->
+        <div id="tab3" class="tab-content">
+            <div class="glass">
+                <h2 style="font-size: 15px; margin-bottom: 12px;">Override Aktuator</h2>
+                <div class="toggle-row" style="border-left: 3px solid var(--accent-green);">
+                    <span class="toggle-title">Mode Manual</span>
+                    <label class="switch"><input type="checkbox" id="chkManual" onchange="toggleManualMode(this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-row"><span class="toggle-title">Lampu UV </span><label class="switch"><input type="checkbox" class="actuator" id="chkUv" onchange="sendCmd('uv', this.checked?1:0)" disabled><span class="slider"></span></label></div>
+                <div class="toggle-row"><span class="toggle-title">Speker US</span><label class="switch"><input type="checkbox" class="actuator" id="chkStrobo" onchange="sendCmd('strobo', this.checked?1:0)" disabled><span class="slider"></span></label></div>
+
+                <hr style="border: 1px solid rgba(255,255,255,0.05); margin: 15px 0;">
+                
+                <h2 style="font-size: 15px; margin-bottom: 10px;">Kontrol LED NeoPixel</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                    <select id="neoColorSel" class="actuator" disabled style="margin: 0; flex: 1;">
+                        <option value="0"> Mati (OFF)</option>
+                        <option value="1"> Merah</option>
+                        <option value="2"> Hijau</option>
+                        <option value="3"> Biru</option>
+                        <option value="4"> Kuning</option>
+                        <option value="5"> Cyan</option>
+                        <option value="6"> Ungu</option>
+                        <option value="7"> Putih</option>
+                    </select>
+                    <button class="btn-act actuator" onclick="applyNeoPixel()" disabled style="width: auto; padding: 10px 15px; margin: 0; background: var(--accent-blue);">Change</button>
+                </div>
+
+                <hr style="border: 1px solid rgba(255,255,255,0.05); margin: 15px 0;">
+
+                <h2 style="font-size: 15px; margin-bottom: 8px;">Test Akustik (Speaker)</h2>
+                <p style="font-size: 10px; color:var(--text-muted); margin-bottom: 10px;">Suara digenerate dari profil kalibrasi.</p>
+                <div id="dynamicAudioButtons" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 4: SENSOR & KALIBRASI -->
+        <div id="tab4" class="tab-content">
+            <div class="glass">
+                <h2 style="font-size: 15px; margin-bottom: 12px; color: var(--accent-green);">🎛️ Kalibrasi</h2>
+                <div class="toggle-row" style="border-left: 3px solid var(--warning);">
+                    <div>
+                        <span class="toggle-title" style="display: block;">Mode Perekaman (Edge Impulse)</span>
+                        <span style="font-size: 9px; color: var(--text-muted);">Mode Kalibrasi</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="chkMode" onchange="toggleSystemMode(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <hr style="border: 1px solid rgba(255,255,255,0.05); margin: 15px 0;">
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <h3 style="font-size: 12px;">1. Identifikasi Suara (Mic)</h3>
+                        <button class="btn-act btn-add" onclick="addMicProfile()" style="width: auto;">+ Tambah</button>
+                    </div>
+                    <div id="listMicProfiles"></div>
+                </div>
+
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <h3 style="font-size: 12px;">2. Playlist Speaker (DFPlayer)</h3>
+                        <button class="btn-act btn-add" onclick="addSpeakerTrack()" style="width: auto;">+ Tambah</button>
+                    </div>
+                    <div id="listSpeakerTracks"></div>
+                </div>
+
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <h3 style="font-size: 12px;">3. Identifikasi Radar (AI Profile)</h3>
+                        <button class="btn-act btn-add" onclick="addRadarProfile()" style="width: auto;">+ Tambah</button>
+                    </div>
+                    <div id="listRadarProfiles"></div>
+                </div>
+
+                <hr style="border: 1px solid rgba(255,255,255,0.05); margin: 15px 0;">
+                
+                <h2 style="font-size: 15px; margin-bottom: 5px; color: var(--accent-green);">🖥️ Live Serial Monitor</h2>
+                <p style="font-size: 10px; color: var(--text-muted); margin-bottom: 8px;">Menampilkan seluruh log data sensor secara langsung.</p>
+                <div id="webSerialBox" class="web-serial-box">Menunggu data telemetri masuk...</div>
+            </div>
+        </div>
+
+        <!-- TAB 5: SETTINGS -->
+        <div id="tab5" class="tab-content">
+            <div class="glass">
+                <h2 style="font-size: 15px; margin-bottom: 5px; color: var(--accent-green);">📱 Integrasi Telegram Bot</h2>
+                <p style="font-size: 10px; color: var(--text-muted); margin-bottom: 10px;">
+                    Masukkan ID Telegram Target.
+                </p>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <input type="number" id="inpWaNumber" placeholder="ID Telegram..." style="flex: 1; margin: 0; background: #0f172a; color: white; padding: 10px; border-radius: 8px; border: 1px solid #334155;">
+                    <button class="btn-act" onclick="saveWaNumber()" style="width: auto; background: var(--accent-green); color: #000; padding: 10px 15px;">Simpan</button>
+                </div>
+                
+                <hr style="border: 1px solid rgba(255,255,255,0.05); margin: 15px 0;">
+                <h2 style="font-size: 15px; margin-bottom: 5px; color: var(--warning);">⚙️ Konfigurasi Sistem</h2>
+                <p style="font-size: 10px; color: var(--text-muted); margin-bottom: 12px;">Sistem dirancang dengan Pin Statis (Permanen). Tidak perlu ubah pin web.</p>
+                <button class="btn-act btn-danger" onclick="sendCmd('reboot', 1)">Restart / Reboot</button>
+            </div>
+        </div>
+
+        <!-- TAB 6: ABOUT -->
+        <div id="tab6" class="tab-content">
+            <div class="glass" style="text-align: center;">
+                <h2 style="color: var(--accent-green); margin-bottom: 8px; font-size: 16px;">Genta-IoT Smart Agriculture</h2>
+                <p style="font-size: 12px; color: var(--text-main); line-height: 1.5; margin-bottom: 15px; text-align: justify;">
+                    Genta-IoT adalah sistem cerdas untuk pertanian yang memadukan stasiun pemantauan cuaca dengan sistem pertahanan pengusir hama otomatis berbasis Radar Omnidirectional dan Akustik (AI Profile).
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL GRAFIK CHART.JS -->
+    <div class="modal-overlay" id="chartModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeChart()">×</button>
+            <h2 id="chartModalTitle" style="font-size: 15px; margin-bottom: 4px; color: var(--accent-green);">Grafik Sensor</h2>
+            <p style="font-size: 10px; color: var(--text-muted);">Riwayat data langsung (Live Tracking)</p>
+            <div class="chart-container">
+                <canvas id="sensorChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="bottom-nav">
+        <button onclick="openTab('tab1', this)" class="active"><span class="icon">🌱</span>Farm</button>
+        <button onclick="openTab('tab2', this)"><span class="icon">📊</span>Dash</button>
+        <button onclick="openTab('tab3', this)"><span class="icon">🕹️</span>Control</button>
+        <button onclick="openTab('tab4', this)"><span class="icon">🎛️</span>Sensor</button>
+        <button onclick="openTab('tab5', this)"><span class="icon">⚙️</span>Setting</button>
+        <button onclick="openTab('tab6', this)"><span class="icon">ℹ️</span>About</button>
+    </div>
+
+    <script>
+        const GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/14G5xLi7_v-DZzk6yyPEZGZJZFne_Lw68CbS-9MU8LME/edit?usp=sharing";
+        const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx-P4cmWvDIX4vXIoQKgKhWob60DuiQB3c_DRwde-8eY4Rc1Bc7X-HDetjgTuLdMYRg/exec"; 
+
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.font.family = "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif";
+        let chartInstance = null; let activeChartKey = ''; const maxDataPoints = 20;
+        let histLabels = []; let histData = { temp: [], hum: [], vpd: [], press: [], alt: [], batt: [], current: [], power: [], radar: [], sound: [], ai: [] };
+
+        // Array 4 Sektor Radar
+        let sectorStates = [
+            { id: 0, label: "UTARA", state: 0, md: 0, me: 0, sd: 0, se: 0, stagT: 0 },
+            { id: 1, label: "TIMUR", state: 0, md: 0, me: 0, sd: 0, se: 0, stagT: 0 },
+            { id: 2, label: "SELATAN", state: 0, md: 0, me: 0, sd: 0, se: 0, stagT: 0 },
+            { id: 3, label: "BARAT", state: 0, md: 0, me: 0, sd: 0, se: 0, stagT: 0 }
+        ];
+
+        function updateSectorDisplay() {
+            let html = "";
+            let highestEnergy = 0; let activeSektor = -1; let maxObjType = "KOSONG"; let objCol = "var(--text-muted)";
+            let finalDist = 0; let finalNrg = 0;
+
+            // Reset semua blip terlebih dahulu sebelum mengevaluasi status multi-target dari sensor
+            for(let i = 0; i < 4; i++) {
+                let blip = document.getElementById('blip' + i);
+                if(blip) blip.style.display = 'none';
+            }
+
+            sectorStates.forEach(sec => {
+                let mEng = sec.me; let sEng = sec.se; let mDist = sec.md; let sDist = sec.sd;
+                
+                if(sEng > 0 && mEng === 0) { sec.stagT += 1; } else { sec.stagT = 0; }
+                let effStat = (sec.stagT >= 6) ? 0 : sEng; 
+                let maxEng = Math.max(mEng, effStat);
+                
+                let objType = ""; let isDetected = false; let sCol = "var(--text-muted)";
+                let badgeClass = "rs-badge"; let badgeText = "KOSONG";
+                
+                if (sec.obj !== undefined && sec.obj !== 0) {
+                    if (sec.obj === 3) { objType = "MANUSIA"; isDetected = true; sCol = "var(--accent-blue)"; }
+                    else if (sec.obj === 1) { objType = "BURUNG"; isDetected = true; sCol = "var(--danger)"; }
+                    else if (sec.obj === 2) { objType = "HEWAN"; isDetected = true; sCol = "var(--warning)"; }
+                } else if (maxEng >= 90) { objType = "MANUSIA"; isDetected = true; sCol = "var(--accent-blue)"; } 
+                else if (maxEng >= 50) { objType = "HEWAN"; isDetected = true; sCol = "var(--warning)"; } 
+                else if (maxEng >= 35) { objType = "BURUNG"; isDetected = true; sCol = "var(--danger)"; }
+
+                let acuanPos = 0;
+                if (isDetected) {
+                    badgeText = objType; badgeClass = "rs-badge active";
+                    
+                    if (mEng > 0 && mDist > 0) { acuanPos = mDist; }
+                    else if (effStat > 0 && sDist > 0) { acuanPos = sDist; }
+                    else if (mDist > 0) { acuanPos = mDist; }
+                    else { acuanPos = sDist; }
+
+                    // Menentukan target prioritas tertinggi untuk kartu ringkasan di dashboard
+                    if(maxEng > highestEnergy) {
+                        highestEnergy = maxEng; activeSektor = sec.id; maxObjType = objType;
+                        objCol = sCol; finalDist = acuanPos; finalNrg = maxEng;
+                    }
+
+                    // --- FITUR TAMBAHAN: MULTI-DETEKSI BLIP PADA MASING-MASING SEKTOR ---
+                    let blip = document.getElementById('blip' + sec.id);
+                    if(blip) {
+                        blip.style.display = 'block';
+                        blip.classList.remove('blip-manusia', 'blip-hewan', 'blip-burung');
+                        
+                        if(maxEng >= 90 || sec.obj === 3) blip.classList.add('blip-manusia');
+                        else if(maxEng >= 50 || sec.obj === 2) blip.classList.add('blip-hewan');
+                        else blip.classList.add('blip-burung');
+
+                        // Konversi jarak aktual (30cm - 800cm) ke skala persentase radius 3D
+                        let radiusPercent = (acuanPos / 800) * 50; 
+                        if(radiusPercent > 50) radiusPercent = 50;
+                        if(radiusPercent < (30/800)*50) radiusPercent = (30/800)*50;
+
+                        // Pemetaan sudut posisi sektor (0: Utara, 1: Timur, 2: Selatan, 3: Barat)
+                        let angleDeg = [0, 90, 180, 270][sec.id];
+                        let angleRad = (angleDeg - 90) * (Math.PI / 180); 
+
+                        let leftPct = 50 + (radiusPercent * Math.cos(angleRad));
+                        let topPct = 50 + (radiusPercent * Math.sin(angleRad));
+                        
+                        blip.style.left = leftPct + "%";
+                        blip.style.top = topPct + "%";
+                    }
+                } 
+
+                // Kalkulasi Persentase untuk Animasi Progress Bar Menyamping
+                let pctDist = (acuanPos / 800) * 100; if(pctDist > 100) pctDist = 100;
+                let pctEng = (mEng / 100) * 100; if(pctEng > 100) pctEng = 100;
+                let pctStat = (effStat / 100) * 100; if(pctStat > 100) pctStat = 100;
+                
+                let distColorClass = (pctDist > 0) ? "bar-dist" : "";
+                let engColorClass = (mEng > 40) ? "bar-eng" : "bar-stat"; 
+                let statColorClass = "bar-stat";
+
+                html += `
+                <div class="radar-sector-card">
+                    <div class="rs-header">
+                        <span style="color: var(--accent-green);">SEKTOR ${sec.label}</span>
+                        <span class="${badgeClass}" style="${isDetected ? `background: rgba(239,68,68,0.2); border-color: ${sCol}; color: ${sCol};` : ''}">${badgeText}</span>
+                    </div>
+                    
+                    <div class="rs-metric-group">
+                        <div class="rs-metric-title">
+                            <span>Detection Distance</span>
+                            <span class="rs-metric-value" style="color: var(--accent-blue);">${acuanPos}<span style="font-size:10px;">cm</span></span>
+                        </div>
+                        <div class="rs-bar-bg"><div class="rs-bar-fill ${distColorClass}" style="width: ${pctDist}%;"></div></div>
+                    </div>
+
+                    <div class="rs-metric-group">
+                        <div class="rs-metric-title">
+                            <span>Movement Energy</span>
+                            <span class="rs-metric-value" style="color: ${mEng > 40 ? 'var(--danger)' : 'var(--warning)'};">${mEng}</span>
+                        </div>
+                        <div class="rs-bar-bg"><div class="rs-bar-fill ${engColorClass}" style="width: ${pctEng}%;"></div></div>
+                    </div>
+                    
+                    <div class="rs-metric-group">
+                        <div class="rs-metric-title">
+                            <span>Stationary Energy</span>
+                            <span class="rs-metric-value" style="color: var(--warning);">${effStat}</span>
+                        </div>
+                        <div class="rs-bar-bg"><div class="rs-bar-fill ${statColorClass}" style="width: ${pctStat}%;"></div></div>
+                    </div>
+                </div>`;
+            });
+            
+            let box = document.getElementById('radarSectorContainer');
+            if(box) {
+                box.className = "radar-log-container"; 
+                box.innerHTML = html;
+            }
+
+            // --- UPDATE STATUS UTAMA PADA KARTU DASHBOARD ---
+            let statusTextEl = document.getElementById('radarStatusText');
+            let radStateEl = document.getElementById('radState');
+            let radDistMEl = document.getElementById('radDistM');
+            let radDistSEl = document.getElementById('radDistS');
+            let radNrgMEl = document.getElementById('radNrgM');
+            let radNrgSEl = document.getElementById('radNrgS');
+
+            if(highestEnergy >= 30) {
+                let sektorL = ["UTARA", "TIMUR", "SELATAN", "BARAT"][activeSektor];
+                statusTextEl.innerText = `🚨 AWAS! MULTI-TARGET TERDETEKSI (Fokus Utama: ${maxObjType} di ${sektorL})!`;
+                statusTextEl.style.color = objCol;
+                
+                radStateEl.innerText = maxObjType; radStateEl.style.color = objCol;
+                radDistMEl.innerText = finalDist + " cm";
+                radDistSEl.innerText = sektorL;
+                radNrgMEl.innerText = finalNrg;
+                radNrgSEl.innerText = (highestEnergy >= 90) ? "VERIFIED (Safety Bypass)" : "HAMA (Target)";
+            } else {
+                statusTextEl.innerText = "Scanning Sektor... (Aman)"; statusTextEl.style.color = "var(--accent-green)";
+                radStateEl.innerText = "KOSONG"; radStateEl.style.color = "var(--text-muted)";
+                radDistMEl.innerText = "-- cm"; radDistSEl.innerText = "--";
+                radNrgMEl.innerText = "0"; radNrgSEl.innerText = "Aman";
+            }
+        }
+
+        function appendWebSerial(text) {
+            let box = document.getElementById('webSerialBox');
+            if(box) { box.innerText += "> " + text + "\n"; if(box.innerText.length > 8000) { box.innerText = box.innerText.slice(-4000); } box.scrollTop = box.scrollHeight; }
+        }
+
+        function openChart(sensorKey, title, unit, colorHex) {
+            activeChartKey = sensorKey; document.getElementById('chartModalTitle').innerText = title; document.getElementById('chartModal').style.display = 'flex';
+            const ctx = document.getElementById('sensorChart').getContext('2d');
+            if (chartInstance) { chartInstance.destroy(); } 
+            chartInstance = new Chart(ctx, {
+                type: 'line', data: { labels: histLabels, datasets: [{ label: `${title} (${unit})`, data: histData[sensorKey], borderColor: colorHex, backgroundColor: colorHex + '33', fill: true, tension: 0.3, pointRadius: 3, borderWidth: 2 }] },
+                options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, plugins: { legend: { display: false } }, scales: { x: { display: true, ticks: { maxTicksLimit: 7 } }, y: { display: true, beginAtZero: (sensorKey === 'radar' || sensorKey === 'sound' || sensorKey === 'current' || sensorKey === 'power' || sensorKey === 'ai') } } }
+            });
+        }
+        function closeChart() { document.getElementById('chartModal').style.display = 'none'; activeChartKey = ''; }
+        function openTab(tabId, btn) { document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active')); document.querySelectorAll('.bottom-nav button').forEach(el => el.classList.remove('active')); document.getElementById(tabId).classList.add('active'); if(btn) btn.classList.add('active'); }
+
+        function bukaLogbook() { window.open(GOOGLE_SHEET_URL, '_blank'); }
+
+        function updateSensorBadge(id, isOk, name) {
+            let el = document.getElementById(id);
+            if(isOk) { el.className = "sensor-badge badge-ok"; el.innerText = name + ": ACTIVE"; }
+            else { el.className = "sensor-badge badge-err"; el.innerText = name + ": MISSING / NULL"; }
+        }
+
+        if(localStorage.getItem('waNumber')) document.getElementById('inpWaNumber').value = localStorage.getItem('waNumber');
+        function saveWaNumber() { let no = document.getElementById('inpWaNumber').value; if(!no || no.length < 9) return; localStorage.setItem('waNumber', no); fetch(GAS_WEB_APP_URL + "?cmd=set_wa&no=" + no, { mode: 'no-cors' }).then(() => alert("Memproses ke server Telegram.")).catch(e => {}); }
+
+        let micProfiles = JSON.parse(localStorage.getItem('micProfiles')) || [{ db: 60, label: "Angin/Normal" }, { db: 80, label: "Hama Terdeteksi" }];
+        function renderMicProfiles() { let html = ""; micProfiles.sort((a,b) => a.db - b.db).forEach((p, idx) => { html += `<div class="list-item"><span>> ${p.db} dB : <b>${p.label}</b></span><button class="del-btn" onclick="delMicProfile(${idx})">✖</button></div>`; }); document.getElementById('listMicProfiles').innerHTML = html; }
+        function addMicProfile() { let db = prompt("Minimal dB:"); if(!db) return; let label = prompt("Identifikasi Suara:"); if(db && label) { micProfiles.push({db: parseInt(db), label: label}); saveProfiles(); } }
+        function delMicProfile(idx) { micProfiles.splice(idx, 1); saveProfiles(); }
+
+        let speakerTracks = JSON.parse(localStorage.getItem('speakerTracks')) || [{ track: 1, label: "Suara Elang", isAlarm: true }];
+        function renderSpeakerTracks() {
+            let html = ""; let diagHtml = "";
+            speakerTracks.forEach((p, idx) => { let chk = p.isAlarm ? "checked" : ""; html += `<div class="list-item" style="flex-wrap: wrap;"><span style="flex:1;">Track ${p.track}: <b>${p.label}</b></span><div><label style="font-size:10px; margin-right:5px;"><input type="checkbox" onchange="toggleAlarmMode(${idx}, this.checked)" ${chk}> Auto-Alarm</label><button class="del-btn" onclick="delSpeakerTrack(${idx})">✖</button></div></div>`; diagHtml += `<button class="btn-act actuator" onclick="sendCmd('audio', ${p.track})" disabled>${p.label}</button>`; });
+            document.getElementById('listSpeakerTracks').innerHTML = html; document.getElementById('dynamicAudioButtons').innerHTML = diagHtml;
+        }
+        function addSpeakerTrack() { let track = prompt("Nomor MP3:"); if(!track) return; let label = prompt("Nama Suara:"); if(track && label) { speakerTracks.push({track: parseInt(track), label: label, isAlarm: false}); saveProfiles(); } }
+        function toggleAlarmMode(idx, checked) { speakerTracks[idx].isAlarm = checked; saveProfiles(); }
+        function delSpeakerTrack(idx) { speakerTracks.splice(idx, 1); saveProfiles(); }
+
+        let radarProfiles = JSON.parse(localStorage.getItem('radarProfiles')) || [{ energy: 30, label: "Burung", exclude: false }, { energy: 90, label: "Petani (Diabaikan)", exclude: true }];
+        function renderRadarProfiles() {
+            let html = "";
+            radarProfiles.sort((a,b) => a.energy - b.energy).forEach((p, idx) => {
+                let excStyle = p.exclude ? "color:var(--danger); text-decoration:line-through;" : "color:var(--accent-green);";
+                html += `<div class="list-item"><span>Energi > ${p.energy} : <b style="${excStyle}">${p.label}</b></span><div><label style="font-size:10px; margin-right:5px;"><input type="checkbox" onchange="toggleRadarExclude(${idx}, this.checked)" ${p.exclude?"checked":""}> Exclude</label><button class="del-btn" onclick="delRadarProfile(${idx})">✖</button></div></div>`;
+            });
+            document.getElementById('listRadarProfiles').innerHTML = html;
+        }
+        function addRadarProfile() { let nrg = prompt("Nilai Energi Radar:"); if(!nrg) return; let label = prompt("Identifikasi Objek:"); if(nrg && label) { radarProfiles.push({energy: parseInt(nrg), label: label, exclude: false}); saveProfiles(); } }
+        function toggleRadarExclude(idx, checked) { radarProfiles[idx].exclude = checked; saveProfiles(); }
+        function delRadarProfile(idx) { radarProfiles.splice(idx, 1); saveProfiles(); }
+
+        function saveProfiles() { localStorage.setItem('micProfiles', JSON.stringify(micProfiles)); localStorage.setItem('speakerTracks', JSON.stringify(speakerTracks)); localStorage.setItem('radarProfiles', JSON.stringify(radarProfiles)); renderMicProfiles(); renderSpeakerTracks(); renderRadarProfiles(); }
+        renderMicProfiles(); renderSpeakerTracks(); renderRadarProfiles();
+
+        if(localStorage.getItem('plantDate')) { document.getElementById('plantDate').value = localStorage.getItem('plantDate'); calcHST(); }
+        function calcHST() {
+            const dt = document.getElementById('plantDate').value; if(!dt) return; localStorage.setItem('plantDate', dt);
+            const diff = Math.floor((new Date() - new Date(dt)) / (1000*60*60*24)); let val = diff >= 0 ? diff : 0;
+            document.getElementById('hstValue').innerText = diff >= 0 ? diff + " HST" : "Belum Tanam"; document.getElementById('farmProgress').value = val;
+            let advice = "Masa persiapan lahan."; if(diff >= 0 && diff <= 30) advice = "Fase Vegetatif Awal."; else if(diff > 30 && diff <= 55) advice = "Fase Bunting."; else if(diff > 55 && diff <= 90) advice = "Fase Generatif: Sistem sisiaga hama aktif."; else if(diff > 90) advice = "Fase Pematangan.";
+            document.getElementById('farmAdvice').innerText = advice;
+        }
+        function resetFaseTanam() { if(confirm("Reset fase tanam?")) { document.getElementById('plantDate').value = ''; localStorage.removeItem('plantDate'); calcHST(); } }
+
+        function forceSimpanManual() {
+            let hst = document.getElementById('hstValue').innerText.replace(/[^0-9]/g, ''); 
+            if (hst === "") { alert("Pilih tanggal tanam terlebih dahulu!"); return; }
+            let t = document.getElementById('valTemp').innerText; let h = document.getElementById('valHum').innerText;
+            let vpdText = document.getElementById('valVpd').innerText; let pText = document.getElementById('valPress').innerText;
+            let bText = document.getElementById('valBatt').innerText; let cText = document.getElementById('valCurrent').innerText;
+            let snd = document.getElementById('valSound').innerText; let fs = document.getElementById('valAiStatus').innerText;
+            let radarStatus = document.getElementById('valMicClass').innerText == "Normal" ? 0 : 1; 
+            let finalUrl = GAS_WEB_APP_URL + `?cmd=log&hst=${hst}&temp=${t}&hum=${h}&vpd=${vpdText}&press=${pText}&batt=${bText}&current=${cText}&sound=${snd}&fan=${encodeURIComponent(fs)}&radar=${radarStatus}`;
+            fetch(finalUrl, { mode: 'no-cors' }).then(() => alert("Log manual berhasil diproses ke Google Sheets!")).catch(e => alert("Permintaan terkirim, namun koneksi server Google tidak memberikan respon."));
+        }
+        
+        function toggleManualMode(isManual) { sendCmd('manual', isManual ? 1 : 0); document.querySelectorAll('.actuator').forEach(el => { el.disabled = !isManual; if(!isManual && el.type === 'checkbox') { el.checked = false; sendCmd(el.id.replace('chk','').toLowerCase(), 0); } }); }
+        function applyNeoPixel() { let colorVal = document.getElementById('neoColorSel').value; sendCmd('neo', parseInt(colorVal)); }
+        function toggleSystemMode(isCalibrate) { if (isCalibrate) { if(confirm("Masuk ke mode Kalibrasi/Perekaman Data?\nSistem otomatis AI Fusion akan dihentikan sementara.")) { sendCmd('mode', 3); } else { document.getElementById('chkMode').checked = false; } } else { sendCmd('mode', 0); } }
+
+        function updateCellularWidget(rssi, netType) {
+            document.getElementById('cellSpeed').innerText = rssi;
+            if(netType) { document.getElementById('cellNetType').innerText = netType; }
+
+            let signalLevel = 0;
+            if (rssi > -70) signalLevel = 4;
+            else if (rssi > -85) signalLevel = 3;
+            else if (rssi > -100) signalLevel = 2;
+            else if (rssi > -110) signalLevel = 1;
+            else if (rssi === 0) signalLevel = 0; 
+            if(rssi > 0 && rssi <= 31) {
+                if (rssi > 20) signalLevel = 4;
+                else if (rssi > 15) signalLevel = 3;
+                else if (rssi > 10) signalLevel = 2;
+                else if (rssi > 0) signalLevel = 1;
+            }
+            for(let i=1; i<=4; i++) {
+                let bar = document.getElementById('bar' + i);
+                if (i <= signalLevel) { bar.classList.add('active'); } 
+                else { bar.classList.remove('active'); bar.style.backgroundColor = '#334155'; }
+            }
+        }
+
+        const broker = "broker.hivemq.com";
+        const clientId = "GentaWeb_" + Math.random().toString(16).substr(2, 8);
+        const topic_telemetry = "genta/unesa/telemetry";
+        const topic_command = "genta/unesa/command";
+        let client = new Paho.MQTT.Client(broker, 8884, "/mqtt", clientId);
+
+        let lastESPTime = 0; let pendingPings = {}; let expectedSeq = -1; let lostPackets = 0; let totalPackets = 0;
+
+        setInterval(() => {
+            if (client.isConnected()) {
+                let pingId = Date.now() % 10000000; pendingPings[pingId] = Date.now();
+                let message = new Paho.MQTT.Message(JSON.stringify({cmd: "ping", val: pingId}));
+                message.destinationName = topic_command; client.send(message);
+            }
+        }, 3000);
+
+        setInterval(() => {
+            let st = document.getElementById('cloudStatus');
+            if (!client.isConnected()) {
+                st.className = 'cloud-status disconnected'; st.innerHTML = "Genta-IoT Disconnected";
+                updateCellularWidget(0, "NO NET");
+                updateSensorBadge('badgeBME', false, "BME280"); updateSensorBadge('badgeINA', false, "INA219"); 
+                updateSensorBadge('badgeMIC', false, "MIC I2S"); updateSensorBadge('badgeRAD', false, "RADAR");
+            } else if (Date.now() - lastESPTime > 6000) {
+                st.className = 'cloud-status warning'; st.innerHTML = "Genta-IoT Connecting...";
+                updateSensorBadge('badgeBME', false, "BME280"); updateSensorBadge('badgeINA', false, "INA219"); 
+                updateSensorBadge('badgeMIC', false, "MIC I2S"); updateSensorBadge('badgeRAD', false, "RADAR");
+            } else {
+                st.className = 'cloud-status connected'; st.innerHTML = "Genta-IoT Connected";
+            }
+        }, 1000);
+
+        client.onMessageArrived = function (message) {
+            if (message.destinationName === topic_telemetry) {
+                let data = JSON.parse(message.payloadString);
+                
+                let serialLogLine = `[MQTT RX] sq:${data.sq || 0} t:${data.t || 0}C h:${data.h || 0}% v:${data.v_bus || 0}V snd:${data.snd || 0}dB ai:${data.ai_s || "N/A"}`;
+                appendWebSerial(serialLogLine);
+                let isRadarUpdated = false;
+                if (data.radars && Array.isArray(data.radars)) {
+                    for (let i = 0; i < data.radars.length; i++) {
+                        let r = data.radars[i];
+                        if (r && r.id >= 0 && r.id <= 3) {
+                            sectorStates[r.id].state = r.st || 0;
+                            sectorStates[r.id].md = r.md || 0;
+                            sectorStates[r.id].me = r.me || 0;
+                            sectorStates[r.id].sd = r.sd || 0;
+                            sectorStates[r.id].se = r.se || 0;
+                            sectorStates[r.id].obj = r.obj || 0;
+                            isRadarUpdated = true;
+                        }
+                    }
+                } 
+                else if (data.r_id !== undefined && data.r_id !== null) {
+                    let r_id = parseInt(data.r_id);
+                    if (!isNaN(r_id) && r_id >= 0 && r_id <= 3) {
+                        sectorStates[r_id].state = data.r_st || 0;
+                        sectorStates[r_id].md = data.r_md || 0;
+                        sectorStates[r_id].me = data.r_me || 0;
+                        sectorStates[r_id].sd = data.r_sd || 0;
+                        sectorStates[r_id].se = data.r_se || 0;
+                        isRadarUpdated = true;
+                    }
+                }
+                if (isRadarUpdated) {
+                    updateSectorDisplay();
+                }
+                if (data.type === "pong") {
+                    let sentTime = pendingPings[data.val];
+                    if (sentTime) {
+                        let latency = Date.now() - sentTime;
+                        document.getElementById('cellLat').innerText = latency + " ms";
+                        delete pendingPings[data.val];
+                    }
+                } 
+                else if (data.type === "telemetry") {
+                    lastESPTime = Date.now(); 
+                    
+                    let seq = data.sq;
+                    if (seq !== undefined) {
+                        totalPackets++;
+                        if (expectedSeq !== -1) {
+                            let missed = seq - expectedSeq;
+                            if (missed > 0) { lostPackets += missed; totalPackets += missed; } 
+                            else if (missed < 0) { lostPackets = 0; totalPackets = 1; }
+                        }
+                        expectedSeq = seq + 1;
+                        let lossPct = (lostPackets / totalPackets) * 100;
+                        document.getElementById('cellLoss').innerText = lossPct.toFixed(1) + "%";
+                    }
+
+                    if (data.rtc_time) {
+                        let timeParts = data.rtc_time.split(" ");
+                        if (timeParts.length >= 2) {
+                            document.getElementById('rtcTime').innerText = timeParts[0];
+                            document.getElementById('rtcDate').innerText = timeParts[1];
+                            document.getElementById('rtcZone').innerText = "WIB (GMT+7)";
+                        } else {
+                            document.getElementById('rtcTime').innerText = data.rtc_time;
+                            document.getElementById('rtcDate').innerText = "";
+                            document.getElementById('rtcZone').innerText = "";
+                        }
+                    } else {
+                        document.getElementById('rtcTime').innerText = "--:--:--";
+                        document.getElementById('rtcDate').innerText = "Menunggu RTC...";
+                        document.getElementById('rtcZone').innerText = "";
+                    }
+
+                    if(document.getElementById('valIp')) document.getElementById('valIp').innerText = data.ip || "--";
+                    if(document.getElementById('valNtp')) document.getElementById('valNtp').innerText = data.ntp || "--";
+                    
+                    let t = data.t; let h = data.h; let p = data.p; let alt = data.alt; 
+                    let v = data.v_bus; let c = data.c; let pwr = data.pw; 
+                    let snd = data.snd; let up = data.up || 0; let sig = data.sig || 0; 
+                    let netTypeData = data.net || "4G LTE"; 
+                    let ai_str = data.ai_s || "--"; let ai_val = data.ai_v || 0;
+                    
+                    updateSensorBadge('badgeBME', (t != null && !isNaN(t) && t !== 0), "BME280");
+                    updateSensorBadge('badgeINA', (v != null && !isNaN(v) && v !== 0), "INA219");
+                    updateSensorBadge('badgeMIC', (snd != null && !isNaN(snd) && snd > 15), "MIC I2S");
+                    updateSensorBadge('badgeRAD', (data.r_id !== undefined && data.r_id !== null || data.radars), "RADAR (MUX)");
+
+                    updateCellularWidget(sig, netTypeData);
+                    
+                    document.getElementById('valTemp').innerText = (t != null && !isNaN(t) && t !== 0) ? t.toFixed(1) : "--";
+                    document.getElementById('valHum').innerText = (h != null && !isNaN(h) && h !== 0) ? h.toFixed(1) : "--";
+                    document.getElementById('valPress').innerText = (p != null && !isNaN(p) && p !== 0) ? p.toFixed(0) : "--";
+                    document.getElementById('valAlt').innerText = (alt != null && !isNaN(alt) && alt !== 0) ? alt.toFixed(1) : "--";
+
+                    document.getElementById('valBatt').innerText = (v != null && !isNaN(v) && v !== 0) ? v.toFixed(1) : "--";
+                    if(document.getElementById('valShunt')) document.getElementById('valShunt').innerText = (data.v_shnt != null && !isNaN(data.v_shnt) && data.v_shnt !== 0) ? data.v_shnt.toFixed(2) : "--";
+                    document.getElementById('valCurrent').innerText = (c != null && !isNaN(c) && c !== 0) ? c.toFixed(1) : "--";
+                    document.getElementById('valPower').innerText = (pwr != null && !isNaN(pwr) && pwr !== 0) ? pwr.toFixed(1) : "--";
+                    
+                    let aiEl = document.getElementById('valAiStatus');
+                    if(aiEl) {
+                        aiEl.innerText = ai_str;
+                        if(ai_str.includes("Aman") || ai_str === "--" || ai_str === "Standby") { aiEl.style.color = "var(--accent-green)"; } 
+                        else { aiEl.style.color = "var(--danger)"; }
+                    }
+                    
+                    let h_up = Math.floor(up / 3600); let m_up = Math.floor((up % 3600) / 60); let s_up = up % 60;
+                    document.getElementById('valUptime').innerText = `${h_up}h ${m_up}m ${s_up}s`;
+
+                    if(t != null && !isNaN(t) && t !== 0) {
+                        let svp = 0.61078 * Math.exp((17.27 * t) / (t + 237.3)); let vpd = svp - (svp * (h / 100));
+                        document.getElementById('valVpd').innerText = vpd.toFixed(2);
+                    } else { document.getElementById('valVpd').innerText = "--"; }
+                    
+                    document.getElementById('valSound').innerText = (snd != null && !isNaN(snd) && snd > 15) ? snd.toFixed(1) : "--";
+                    
+                    let micClass = "Menunggu Sensor"; let isLoudAlarm = false;
+                    if(snd != null && !isNaN(snd) && snd > 15) {
+                        micClass = "Normal";
+                        for (let i = micProfiles.length - 1; i >= 0; i--) {
+                            if (snd >= micProfiles[i].db) { micClass = micProfiles[i].label; if(i > 0) isLoudAlarm = true; break; }
+                        }
+                    }
+                    document.getElementById('valMicClass').innerText = micClass;
+                    document.getElementById('valMicClass').style.color = isLoudAlarm ? "var(--danger)" : "var(--text-muted)";
+
+                    let msgHamaBox = document.getElementById('msgHamaAlert'); let pestAdvice = document.getElementById('pestAdvice');
+                    if (isLoudAlarm) {
+                        msgHamaBox.classList.add('active'); msgHamaBox.style.opacity = "1";
+                        pestAdvice.innerText = `Terdeteksi bising di lahan. Sistem pengusir aktif.`; pestAdvice.style.color = "var(--text-main)";
+                    } else {
+                        msgHamaBox.classList.remove('active'); msgHamaBox.style.opacity = "0.5";
+                        pestAdvice.innerText = "Memantau area lahan... Tidak ada aktivitas hama."; pestAdvice.style.color = "var(--text-muted)";
+                    }
+
+                    let now = new Date(); let timeStr = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0') + ":" + now.getSeconds().toString().padStart(2, '0');
+                    if (histLabels.length >= maxDataPoints) { histLabels.shift(); histData.temp.shift(); histData.hum.shift(); histData.vpd.shift(); histData.press.shift(); histData.alt.shift(); histData.batt.shift(); histData.radar.shift(); histData.sound.shift(); histData.current.shift(); histData.power.shift(); histData.ai.shift(); }
+                    
+                    histLabels.push(timeStr); 
+                    if(t != null && !isNaN(t) && t !== 0) { histData.temp.push(t); histData.hum.push(h); histData.press.push(p); histData.alt.push(alt); }
+                    if(v != null && !isNaN(v) && v !== 0) { histData.batt.push(v); histData.current.push(c); histData.power.push(parseFloat(pwr.toFixed(1))); }
+                    if(snd != null && !isNaN(snd)) { histData.sound.push(snd); }
+                    
+                    histData.radar.push(0); 
+                    histData.ai.push(ai_val);
+                    if (activeChartKey !== '' && chartInstance !== null) chartInstance.update();
+                }
+            }
+        };
+
+        function onConnectionLost(responseObject) {
+            if (responseObject.errorCode !== 0) {
+                console.log("Koneksi MQTT terputus (Error: " + responseObject.errorMessage + "). Mencoba menghubungkan kembali...");
+                document.getElementById('cloudStatus').className = 'cloud-status disconnected';
+                document.getElementById('cloudStatus').innerHTML = "Genta-IoT Disconnected";
+                setTimeout(initMQTT, 1500);
+            }
+        }
+        client.onConnectionLost = onConnectionLost;
+        function initMQTT() {
+            client.connect({
+                useSSL: true,
+                cleanSession: true,
+                keepAliveInterval: 30,
+                onSuccess: () => { 
+                    console.log("MQTT Broker Connected");
+                    document.getElementById('cloudStatus').className = 'cloud-status connected'; 
+                    document.getElementById('cloudStatus').innerHTML = "Genta-IoT Connected";
+                    client.subscribe(topic_telemetry); 
+                },
+                onFailure: (e) => { 
+                    console.log("Failed connect MQTT. Trying...", e);
+                    setTimeout(initMQTT, 1500); 
+                }
+            });
+        }
+
+        function sendCmd(cmd, val) {
+            if (client.isConnected()) {
+                let message = new Paho.MQTT.Message(JSON.stringify({cmd: cmd, val: val}));
+                message.destinationName = topic_command; client.send(message);
+            }
+        }
+        window.onload = function() { initMQTT(); };
+    </script>
+</body>
+</html>
