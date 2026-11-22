@@ -1,3 +1,416 @@
+/* =====================================================================
+           GentaAlert — pop-up bergaya SweetAlert (dialog + toast)
+           Mengikuti tema Gelap/Cerah lewat variabel CSS GentaDash dan selalu
+           menampilkan logo Genta (sumber gambar sama persis dengan header).
+           ---------------------------------------------------------------
+           GentaAlert.fire({ icon, title, text, confirmButtonText, ... })  -> Promise
+           GentaAlert.confirm({ title, text, danger })                      -> Promise<boolean>
+           GentaAlert.toast({ icon, title, text, timer, key })
+           GentaAlert.loading(title, text) / GentaAlert.close()
+           ===================================================================== */
+        const GentaAlert = (function () {
+            'use strict';
+
+            const ICONS = {
+                success:  '<path class="ga-draw" pathLength="1" d="M5.6 12.9l4.1 4.1L18.6 8"/>',
+                error:    '<path class="ga-draw" pathLength="1" d="M7.2 7.2l9.6 9.6M16.8 7.2l-9.6 9.6"/>',
+                warning:  '<path class="ga-draw" pathLength="1" d="M12 6.4v7.2"/><circle class="ga-dot" cx="12" cy="17.6" r="1.25"/>',
+                info:     '<path class="ga-draw" pathLength="1" d="M12 10.8v6.8"/><circle class="ga-dot" cx="12" cy="7.3" r="1.25"/>',
+                question: '<path class="ga-draw" pathLength="1" d="M9.3 9.4a2.8 2.8 0 1 1 4.1 2.5c-.9.5-1.4 1.1-1.4 2.3"/><circle class="ga-dot" cx="12" cy="17.7" r="1.25"/>'
+            };
+            const DEFAULTS = {
+                icon: 'info', title: '', text: '', html: null,
+                confirmButtonText: 'OK', cancelButtonText: 'Batal', denyButtonText: 'Tidak',
+                showCancelButton: false, showDenyButton: false, showCloseButton: false,
+                danger: false, allowOutsideClick: true, allowEscapeKey: true,
+                timer: 0, loading: false, fields: null, input: null
+            };
+
+            const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+            const mk = (tag, cls, text) => {
+                const n = document.createElement(tag);
+                if (cls) n.className = cls;
+                if (text !== undefined && text !== null) n.textContent = text;
+                return n;
+            };
+            // Logo diambil dari <img> header supaya selalu sama dengan logo asli (tidak diubah)
+            function logoImg() {
+                const h = document.querySelector('.header-center img');
+                const img = mk('img', 'ga-logo');
+                img.src = (h && h.getAttribute('src')) || 'GENTA.png';
+                img.alt = 'Logo Genta';
+                img.draggable = false;
+                return img;
+            }
+            const iconSvg = (type) => '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (ICONS[type] || ICONS.info) + '</svg>';
+
+            /* ------------------------------ DIALOG ------------------------------ */
+            let current = null;
+            const queue = [];
+            let appRoot = null;
+
+            function setInert(on) {
+                appRoot = appRoot || document.querySelector('.container');
+                if (appRoot && 'inert' in appRoot) appRoot.inert = on;
+            }
+
+            function fire(options) {
+                const opts = Object.assign({}, DEFAULTS, typeof options === 'string' ? { text: options } : (options || {}));
+                if (!ICONS[opts.icon]) opts.icon = 'info';
+                return new Promise((resolve) => {
+                    const job = { opts: opts, resolve: resolve };
+                    if (current && current.opts.loading) {      // dialog "memproses" langsung digantikan hasilnya
+                        close({ isDismissed: true, dismiss: 'replaced' }, true);
+                        open(job);
+                    } else if (current) {
+                        queue.push(job);
+                    } else {
+                        open(job);
+                    }
+                });
+            }
+
+            function open(job) {
+                const o = job.opts;
+                const lastFocus = document.activeElement;
+
+                const overlay = mk('div', 'ga-overlay');
+                const dlg = mk('div', 'ga-dialog ga-type-' + o.icon + (o.danger ? ' ga-danger' : '') + (o.loading ? ' ga-loading' : ''));
+                dlg.setAttribute('role', o.loading ? 'alertdialog' : 'dialog');
+                dlg.setAttribute('aria-modal', 'true');
+                dlg.tabIndex = -1;
+                const uid = 'ga' + Date.now().toString(36);
+                dlg.setAttribute('aria-labelledby', uid + '-t');
+                dlg.setAttribute('aria-describedby', uid + '-d');
+                if (o.loading) dlg.setAttribute('aria-busy', 'true');
+
+                dlg.appendChild(mk('div', 'ga-accent'));
+
+                if (o.showCloseButton && !o.loading) {
+                    const x = mk('button', 'ga-close', '✕');
+                    x.type = 'button';
+                    x.setAttribute('aria-label', 'Tutup');
+                    x.addEventListener('click', () => close({ isDismissed: true, dismiss: 'close' }));
+                    dlg.appendChild(x);
+                }
+
+                // Logo + lencana status
+                const hero = mk('div', 'ga-hero');
+                const wrap = mk('div', 'ga-logo-wrap');
+                wrap.appendChild(mk('span', 'ga-glow'));
+                wrap.appendChild(mk('span', 'ga-ring'));
+                wrap.appendChild(logoImg());
+                if (!o.loading) {
+                    const badge = mk('span', 'ga-badge');
+                    badge.innerHTML = iconSvg(o.icon);
+                    wrap.appendChild(badge);
+                }
+                hero.appendChild(wrap);
+                dlg.appendChild(hero);
+
+                const title = mk('h2', 'ga-title', o.title || (o.loading ? 'Memproses…' : ''));
+                title.id = uid + '-t';
+                if (!title.textContent) title.style.display = 'none';
+                dlg.appendChild(title);
+
+                const body = mk('div', 'ga-text');
+                body.id = uid + '-d';
+                if (o.html) body.innerHTML = o.html;      // hanya untuk string statis buatan sendiri
+                else body.textContent = o.text || '';
+                if (!o.html && !o.text) body.style.display = 'none';
+                dlg.appendChild(body);
+
+                // Kolom isian (menggantikan prompt bawaan)
+                const fields = o.fields || (o.input ? [{
+                    name: 'value', type: o.input, label: o.inputLabel, placeholder: o.inputPlaceholder,
+                    value: o.inputValue, validator: o.inputValidator
+                }] : []);
+                const inputs = {};
+                if (fields.length) {
+                    const form = mk('form', 'ga-form');
+                    form.noValidate = true;
+                    fields.forEach((f, i) => {
+                        const row = mk('label', 'ga-field');
+                        if (f.label) row.appendChild(mk('span', 'ga-field-label', f.label));
+                        const box = mk('span', 'ga-field-box');
+                        const inp = document.createElement('input');
+                        inp.className = 'ga-input';
+                        inp.type = (f.type === 'number') ? 'number' : 'text';
+                        if (f.type === 'number') { inp.inputMode = f.step && f.step < 1 ? 'decimal' : 'numeric'; inp.step = f.step || 1; }
+                        if (f.min !== undefined) inp.min = f.min;
+                        if (f.max !== undefined) inp.max = f.max;
+                        if (f.maxLength) inp.maxLength = f.maxLength;
+                        if (f.suffix) inp.classList.add('ga-has-suffix');
+                        if (f.placeholder) inp.placeholder = f.placeholder;
+                        if (f.value !== undefined && f.value !== null) inp.value = f.value;
+                        inp.autocomplete = 'off';
+                        inp.spellcheck = false;
+                        inp.name = f.name;
+                        inputs[f.name] = inp;
+                        // Enter mengirim form (formulir tanpa tombol submit tidak melakukannya sendiri bila ada >1 kolom)
+                        inp.addEventListener('keydown', (e) => {
+                            if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); confirmClick(); }
+                        });
+                        box.appendChild(inp);
+                        if (f.suffix) box.appendChild(mk('span', 'ga-suffix', f.suffix));
+                        row.appendChild(box);
+                        form.appendChild(row);
+                    });
+                    form.addEventListener('submit', (e) => { e.preventDefault(); confirmClick(); });
+                    dlg.appendChild(form);
+                }
+                const err = mk('div', 'ga-error');
+                err.setAttribute('role', 'alert');
+                dlg.appendChild(err);
+
+                // Tombol
+                let btnConfirm = null, btnCancel = null, btnDeny = null;
+                if (!o.loading) {
+                    const actions = mk('div', 'ga-actions');
+                    if (o.showCancelButton) {
+                        btnCancel = mk('button', 'ga-btn ga-cancel', o.cancelButtonText);
+                        btnCancel.type = 'button';
+                        btnCancel.addEventListener('click', () => close({ isDismissed: true, dismiss: 'cancel' }));
+                        actions.appendChild(btnCancel);
+                    }
+                    if (o.showDenyButton) {
+                        btnDeny = mk('button', 'ga-btn ga-deny', o.denyButtonText);
+                        btnDeny.type = 'button';
+                        btnDeny.addEventListener('click', () => close({ isDenied: true }));
+                        actions.appendChild(btnDeny);
+                    }
+                    btnConfirm = mk('button', 'ga-btn ga-confirm', o.confirmButtonText);
+                    btnConfirm.type = 'button';
+                    btnConfirm.addEventListener('click', confirmClick);
+                    actions.appendChild(btnConfirm);
+                    dlg.appendChild(actions);
+                }
+
+                if (o.timer > 0) {
+                    const bar = mk('div', 'ga-timer');
+                    const fill = mk('i');
+                    fill.style.animationDuration = o.timer + 'ms';
+                    bar.appendChild(fill);
+                    dlg.appendChild(bar);
+                }
+
+                overlay.appendChild(dlg);
+
+                function confirmClick() {
+                    if (!fields.length) { close({ isConfirmed: true }); return; }
+                    const values = {};
+                    for (let i = 0; i < fields.length; i++) {
+                        const f = fields[i], inp = inputs[f.name];
+                        const raw = inp.value.trim();
+                        const label = f.label || 'Kolom';
+                        let msg = '';
+                        if (raw === '' && f.required !== false) msg = label + ' wajib diisi.';
+                        else if (f.type === 'number' && raw !== '') {
+                            const n = Number(raw);
+                            if (!Number.isFinite(n) || (f.integer !== false && !Number.isInteger(n))) msg = label + ' harus berupa angka bulat.';
+                            else if (f.min !== undefined && n < f.min) msg = label + ' minimal ' + f.min + '.';
+                            else if (f.max !== undefined && n > f.max) msg = label + ' maksimal ' + f.max + '.';
+                        }
+                        if (!msg && f.validator) msg = f.validator(raw) || '';
+                        if (msg) { showError(msg, inp); return; }
+                        values[f.name] = (f.type === 'number' && raw !== '') ? Number(raw) : raw;
+                    }
+                    close({ isConfirmed: true, value: values[fields[0].name], values: values });
+                }
+                function showError(msg, inp) {
+                    err.textContent = msg;
+                    err.classList.add('show');
+                    Object.keys(inputs).forEach((k) => inputs[k].removeAttribute('aria-invalid'));
+                    if (inp) { inp.setAttribute('aria-invalid', 'true'); inp.focus(); }
+                    dlg.classList.remove('ga-shake');
+                    void dlg.offsetWidth;
+                    dlg.classList.add('ga-shake');
+                }
+
+                const onOverlayDown = (e) => {
+                    if (e.target === overlay && o.allowOutsideClick && !o.loading) close({ isDismissed: true, dismiss: 'backdrop' });
+                };
+                overlay.addEventListener('pointerdown', onOverlayDown);
+
+                // Escape + jebakan fokus (capture agar tidak ikut menutup modal grafik di belakang)
+                const onKey = (e) => {
+                    if (e.key === 'Escape') {
+                        e.stopImmediatePropagation();
+                        if (o.allowEscapeKey && !o.loading) { e.preventDefault(); close({ isDismissed: true, dismiss: 'esc' }); }
+                        return;
+                    }
+                    if (e.key === 'Tab') {
+                        const list = Array.from(dlg.querySelectorAll('button, input, [href], select, textarea, [tabindex]:not([tabindex="-1"])'))
+                            .filter((n) => !n.disabled && n.offsetParent !== null);
+                        if (!list.length) { e.preventDefault(); dlg.focus(); return; }
+                        const first = list[0], last = list[list.length - 1];
+                        if (e.shiftKey && (document.activeElement === first || document.activeElement === dlg)) { e.preventDefault(); last.focus(); }
+                        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                        else if (!dlg.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+                    }
+                };
+                document.addEventListener('keydown', onKey, true);
+
+                current = { opts: o, resolve: job.resolve, overlay: overlay, dlg: dlg, onKey: onKey, lastFocus: lastFocus, timer: null };
+
+                setInert(true);
+                document.body.appendChild(overlay);
+                if (reduceMotion()) overlay.classList.add('ga-instant');
+
+                // Fokus awal: kolom pertama, lalu tombol utama
+                const firstInput = fields.length ? inputs[fields[0].name] : null;
+                const target = firstInput || (o.showCancelButton && o.focusCancel ? btnCancel : btnConfirm) || dlg;
+                setTimeout(() => { try { target.focus({ preventScroll: true }); if (firstInput) firstInput.select(); } catch (e) { /* abaikan */ } }, 30);
+
+                if (o.timer > 0) current.timer = setTimeout(() => close({ isDismissed: true, dismiss: 'timer' }), o.timer);
+            }
+
+            function close(result, instant) {
+                if (!current) return;
+                const c = current;
+                current = null;
+                clearTimeout(c.timer);
+                document.removeEventListener('keydown', c.onKey, true);
+                const res = Object.assign({ isConfirmed: false, isDenied: false, isDismissed: false }, result || {});
+                if (res.isConfirmed || res.isDenied) res.isDismissed = false;
+
+                const finish = () => {
+                    if (c.overlay.parentNode) c.overlay.parentNode.removeChild(c.overlay);
+                    if (!current) {
+                        setInert(false);
+                        if (c.lastFocus && document.contains(c.lastFocus) && typeof c.lastFocus.focus === 'function') {
+                            try { c.lastFocus.focus({ preventScroll: true }); } catch (e) { /* abaikan */ }
+                        }
+                    }
+                    c.resolve(res);
+                    if (!current && queue.length) open(queue.shift());
+                };
+                if (instant || reduceMotion()) { finish(); return; }
+                c.overlay.classList.add('ga-out');
+                setTimeout(finish, 170);
+            }
+
+            const confirmDialog = (o) => fire(Object.assign({ icon: 'question', showCancelButton: true, confirmButtonText: 'Ya', cancelButtonText: 'Batal' }, typeof o === 'string' ? { text: o } : o))
+                .then((r) => !!r.isConfirmed);
+
+            /* ------------------------------ TOAST ------------------------------ */
+            let host = null;
+            function toastHost() {
+                if (host && host.isConnected) return host;
+                host = mk('div', 'ga-toasts');
+                host.setAttribute('aria-live', 'polite');
+                document.body.appendChild(host);
+                return host;
+            }
+
+            function removeToast(t, instant) {
+                if (!t || t._gone) return;
+                t._gone = true;
+                clearTimeout(t._timer);
+                if (instant || reduceMotion()) { if (t.parentNode) t.parentNode.removeChild(t); return; }
+                t.classList.add('ga-toast-out');
+                setTimeout(() => { if (t.parentNode) t.parentNode.removeChild(t); }, 200);
+            }
+
+            function toast(options) {
+                const o = Object.assign({ icon: 'info', timer: 3800, title: '', text: '', key: '' }, typeof options === 'string' ? { title: options } : (options || {}));
+                if (!ICONS[o.icon]) o.icon = 'info';
+                const h = toastHost();
+                if (o.key) {
+                    const old = h.querySelector('[data-key="' + String(o.key).replace(/"/g, '') + '"]');
+                    if (old) removeToast(old, true);
+                }
+                const t = mk('div', 'ga-toast ga-type-' + o.icon);
+                t.setAttribute('role', o.icon === 'error' ? 'alert' : 'status');
+                if (o.key) t.setAttribute('data-key', o.key);
+
+                const lw = mk('div', 'ga-toast-logo');
+                lw.appendChild(logoImg());
+                const badge = mk('span', 'ga-badge');
+                badge.innerHTML = iconSvg(o.icon);
+                lw.appendChild(badge);
+                t.appendChild(lw);
+
+                const body = mk('div', 'ga-toast-body');
+                if (o.title) body.appendChild(mk('b', '', o.title));
+                if (o.text) body.appendChild(mk('span', '', o.text));
+                t.appendChild(body);
+
+                const x = mk('button', 'ga-toast-x', '✕');
+                x.type = 'button';
+                x.setAttribute('aria-label', 'Tutup notifikasi');
+                x.addEventListener('click', () => removeToast(t));
+                t.appendChild(x);
+
+                if (o.timer > 0) {
+                    const bar = mk('i', 'ga-toast-bar');
+                    bar.style.animationDuration = o.timer + 'ms';
+                    t.appendChild(bar);
+                }
+
+                h.appendChild(t);
+                while (h.children.length > 3) removeToast(h.firstElementChild, true);
+
+                // Timer yang berhenti saat ditahan/di-hover
+                let remaining = o.timer, started = 0;
+                const run = () => { if (o.timer <= 0) return; started = Date.now(); clearTimeout(t._timer); t._timer = setTimeout(() => removeToast(t), Math.max(remaining, 300)); t.classList.remove('is-held'); };
+                const hold = () => { if (o.timer <= 0 || t._gone) return; clearTimeout(t._timer); remaining -= Date.now() - started; t.classList.add('is-held'); };
+                run();
+                t.addEventListener('pointerenter', hold);
+                t.addEventListener('pointerleave', () => { if (!drag) run(); });
+
+                // Geser ke samping untuk menutup
+                let drag = null;
+                t.addEventListener('pointerdown', (e) => {
+                    if (e.target.closest('.ga-toast-x')) return;
+                    drag = { x: e.clientX, dx: 0, id: e.pointerId };
+                    hold();
+                    try { t.setPointerCapture(e.pointerId); } catch (err) { /* abaikan */ }
+                    t.classList.add('is-dragging');
+                });
+                t.addEventListener('pointermove', (e) => {
+                    if (!drag || e.pointerId !== drag.id) return;
+                    drag.dx = e.clientX - drag.x;
+                    t.style.transform = 'translate3d(' + drag.dx + 'px,0,0)';
+                    t.style.opacity = String(Math.max(0.2, 1 - Math.abs(drag.dx) / 220));
+                });
+                const endDrag = () => {
+                    if (!drag) return;
+                    const dx = drag.dx;
+                    drag = null;
+                    t.classList.remove('is-dragging');
+                    if (Math.abs(dx) > 70) {
+                        t.style.transform = 'translate3d(' + (dx > 0 ? 400 : -400) + 'px,0,0)';
+                        t.style.opacity = '0';
+                        removeToast(t);
+                    } else {
+                        t.style.transform = '';
+                        t.style.opacity = '';
+                        run();
+                    }
+                };
+                t.addEventListener('pointerup', endDrag);
+                t.addEventListener('pointercancel', endDrag);
+
+                return { close: () => removeToast(t) };
+            }
+
+            return {
+                fire: fire,
+                confirm: confirmDialog,
+                toast: toast,
+                loading: (title, text) => fire({ loading: true, icon: 'info', title: title || 'Memproses…', text: text || '', allowOutsideClick: false, allowEscapeKey: false }),
+                close: () => close({ isDismissed: true, dismiss: 'api' }),
+                isOpen: () => !!current,
+                isLoading: () => !!(current && current.opts.loading)
+            };
+        })();
+
+        // Pengaman: alert() bawaan peramban dialihkan ke GentaAlert (tidak memblokir halaman)
+        window.alert = function (msg) {
+            GentaAlert.fire({ icon: 'info', title: 'Pemberitahuan', text: String(msg === undefined || msg === null ? '' : msg) });
+        };
+
         const GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/14G5xLi7_v-DZzk6yyPEZGZJZFne_Lw68CbS-9MU8LME/edit?usp=sharing";
         const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx-P4cmWvDIX4vXIoQKgKhWob60DuiQB3c_DRwde-8eY4Rc1Bc7X-HDetjgTuLdMYRg/exec";
 
@@ -83,6 +496,15 @@
             actuatorState.spkReason = reason || "Terdeteksi Hama • Suara Pengusir Aktif (60 detik)";
             updateSpeakerUI();
             if (!silent) sendCmd('strobo', 1);
+            if (!forceReset) {
+                GentaAlert.toast({
+                    icon: 'warning',
+                    title: 'Hama terdeteksi!',
+                    text: String(actuatorState.spkReason).replace(/^[^\p{L}\p{N}]+/u, ''),
+                    timer: 6000,
+                    key: 'pest'
+                });
+            }
 
             spkCooldownTimer = setInterval(() => {
                 spkRemainingSeconds--;
@@ -533,14 +955,45 @@
 
         function toggleSystemMode(isCalibrate) {
             if (isCalibrate) {
-                if (confirm("Masuk ke mode Kalibrasi/Perekaman Data?\nSistem otomatis AI Fusion akan dihentikan sementara.")) {
-                    sendCmd('mode', 3);
-                } else {
-                    $('chkMode').checked = false;
-                }
+                GentaAlert.confirm({
+                    icon: 'warning',
+                    title: 'Masuk mode Kalibrasi?',
+                    text: 'Mode Kalibrasi/Perekaman Data akan diaktifkan.\nSistem otomatis AI Fusion dihentikan sementara.',
+                    confirmButtonText: 'Ya, aktifkan',
+                    cancelButtonText: 'Batal'
+                }).then((ok) => {
+                    if (ok) {
+                        sendCmd('mode', 3);
+                        notifyCmd('Mode kalibrasi diminta', 'AI Fusion dihentikan sementara.', 'mode');
+                    } else {
+                        $('chkMode').checked = false;
+                    }
+                });
             } else {
                 sendCmd('mode', 0);
+                notifyCmd('Kembali ke mode normal', 'AI Fusion aktif kembali.', 'mode');
             }
+        }
+
+        // Toast hasil pengiriman perintah ke ESP32 (MQTT)
+        function notifyCmd(okTitle, okText, key) {
+            if (client.isConnected()) GentaAlert.toast({ icon: 'success', title: okTitle, text: okText, key: key });
+            else GentaAlert.toast({ icon: 'warning', title: 'Perintah belum terkirim', text: 'Tidak terhubung ke ESP32 (MQTT).', key: key });
+        }
+
+        function confirmReboot() {
+            GentaAlert.confirm({
+                icon: 'warning',
+                danger: true,
+                title: 'Restart perangkat?',
+                text: 'Perintah reboot dikirim ke ESP32 lewat MQTT. Koneksi akan terputus beberapa detik.',
+                confirmButtonText: 'Ya, restart',
+                cancelButtonText: 'Batal'
+            }).then((ok) => {
+                if (!ok) return;
+                sendCmd('reboot', 1);
+                notifyCmd('Perintah reboot terkirim', 'ESP32 akan memulai ulang.', 'reboot');
+            });
         }
 
         /* ---------- Tema: gelap / cerah / otomatis ---------- */
@@ -606,7 +1059,14 @@
         /* ---------- Modal grafik ---------- */
         function openChart(sensorKey, title, unit, colorHex) {
             if (typeof Chart === 'undefined') {
-                alert("Library grafik (Chart.js) gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.");
+                GentaAlert.fire({
+                    icon: 'error',
+                    title: 'Grafik tidak tersedia',
+                    text: 'Library grafik (Chart.js) gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.',
+                    confirmButtonText: 'Muat ulang',
+                    showCancelButton: true,
+                    cancelButtonText: 'Tutup'
+                }).then((r) => { if (r.isConfirmed) location.reload(); });
                 return;
             }
             chartMeta = { sensorKey, title, unit, colorHex };
@@ -677,14 +1137,256 @@
 
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChart(); });
 
-        function openTab(tabId, btn) {
-            document.querySelectorAll('.tab-content').forEach((el) => el.classList.remove('active'));
-            document.querySelectorAll('.bottom-nav .nav-btn').forEach((el) => el.classList.remove('active'));
-            const targetTab = $(tabId);
-            if (targetTab) targetTab.classList.add('active');
-            if (btn) btn.classList.add('active');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
+        /* ---------- Navigasi tab + geser (swipe) antar halaman ---------- */
+        const TabNav = (function () {
+            'use strict';
+            const tabs = Array.prototype.slice.call(document.querySelectorAll('.tab-content'));
+            const nav = document.querySelector('.bottom-nav');
+            const navBtns = Array.prototype.slice.call(document.querySelectorAll('.bottom-nav .nav-btn'));
+            const canAnimate = typeof Element.prototype.animate === 'function';
+            const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+            let index = Math.max(0, tabs.findIndex((t) => t.classList.contains('active')));
+            let anims = [];
+            let swallowUntil = 0;
+
+            const COMMIT_RATIO = 0.22;      // geser > 22% lebar layar => pindah
+            const FLICK_SPEED = 0.45;       // atau kibasan cepat (px/ms)
+            const LOCK_PX = 10;             // jarak minimal sebelum arah ditentukan
+            const EDGE_GUARD = 12;          // abaikan sentuhan di tepi layar (gestur sistem)
+
+            if (nav) nav.style.setProperty('--nav-n', String(navBtns.length));
+
+            function trackAnim(a) { anims.push(a); return a; }
+            function cancelAnims() {
+                anims.forEach((a) => { try { a.cancel(); } catch (e) { /* abaikan */ } });
+                anims = [];
+            }
+
+            function setNav(pos, dragging) {
+                if (!nav) return;
+                nav.classList.toggle('is-dragging', !!dragging);
+                nav.style.setProperty('--nav-idx', String(pos));
+            }
+            function markActive(idx) {
+                navBtns.forEach((b, i) => {
+                    b.classList.toggle('active', i === idx);
+                    if (i === idx) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+                });
+                setNav(idx, false);
+            }
+
+            function resetTabStyle(el) {
+                if (!el) return;
+                el.style.transform = '';
+                el.style.opacity = '';
+                el.style.transition = '';
+            }
+
+            /* Pindah ke tab ke-idx. dir: +1 (maju, masuk dari kanan) / -1 (mundur, dari kiri) */
+            function go(idx, opts) {
+                opts = opts || {};
+                if (idx < 0 || idx >= tabs.length) return;
+                cancelAnims();
+                tabs.forEach(resetTabStyle);
+                hidePeek();
+                document.documentElement.classList.remove('is-swiping');
+
+                if (idx === index) {                       // tab yang sama: cukup gulir ke atas
+                    markActive(index);
+                    window.scrollTo({ top: 0, behavior: reduceMotion() ? 'auto' : 'smooth' });
+                    return;
+                }
+                const dir = opts.dir || (idx > index ? 1 : -1);
+                tabs.forEach((t, i) => t.classList.toggle('active', i === idx));
+                index = idx;
+                markActive(idx);
+                window.scrollTo(0, 0);
+
+                if (canAnimate && !reduceMotion() && !opts.instant) {
+                    trackAnim(tabs[idx].animate(
+                        [{ transform: 'translate3d(' + (dir * 40) + 'px,0,0)', opacity: 0 }, { transform: 'translate3d(0,0,0)', opacity: 1 }],
+                        { duration: 300, easing: 'cubic-bezier(.22,.9,.3,1)' }
+                    ));
+                }
+            }
+
+            /* ---- petunjuk di tepi layar saat menggeser ---- */
+            let peek = null, peekFor = -2;
+            function ensurePeek() {
+                if (peek) return peek;
+                peek = document.createElement('div');
+                peek.className = 'swipe-peek';
+                peek.setAttribute('aria-hidden', 'true');
+                peek.innerHTML = '<span class="sp-ico"></span><span class="sp-txt"></span>';
+                document.body.appendChild(peek);
+                return peek;
+            }
+            function showPeek(target, side, progress, armed) {
+                const p = ensurePeek();
+                if (peekFor !== target) {
+                    peekFor = target;
+                    const btn = navBtns[target];
+                    const svg = btn ? btn.querySelector('svg') : null;
+                    const label = btn ? btn.querySelector('span') : null;
+                    p.querySelector('.sp-ico').innerHTML = svg ? svg.outerHTML : '';
+                    p.querySelector('.sp-txt').textContent = label ? label.textContent : '';
+                }
+                p.dataset.side = side;
+                p.style.setProperty('--sp', String(Math.max(0, Math.min(1, progress))));
+                p.classList.toggle('armed', !!armed);
+                p.classList.add('show');
+            }
+            function hidePeek() {
+                if (peek) peek.classList.remove('show', 'armed');
+                peekFor = -2;
+            }
+
+            /* ---- seret (drag) ---- */
+            let sw = null;     // { id, x0, y0, t0, state, samples, w, dx }
+
+            function blocked(target) {
+                if (!(target instanceof Element)) return true;
+                if (typeof GentaAlert !== 'undefined' && GentaAlert.isOpen()) return true;
+                const cm = document.getElementById('chartModal');
+                if (cm && cm.style.display === 'flex') return true;
+                if (target.closest('input, select, textarea, [contenteditable="true"], [data-no-swipe], .terminal-box, .ga-overlay, .ga-toasts, .modal-overlay')) return true;
+                for (let n = target; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+                    if (n.scrollWidth > n.clientWidth + 1) {
+                        const ox = getComputedStyle(n).overflowX;
+                        if (ox === 'auto' || ox === 'scroll') return true;     // area yang bisa digulir mendatar
+                    }
+                }
+                return false;
+            }
+
+            function applyDrag(dx) {
+                const el = tabs[index];
+                const w = sw.w;
+                const atFirst = index === 0, atLast = index === tabs.length - 1;
+                let eff = dx;
+                if ((dx > 0 && atFirst) || (dx < 0 && atLast)) eff = dx * 0.28;      // tepi: terasa menahan
+                sw.eff = eff;
+                el.style.transform = 'translate3d(' + eff + 'px,0,0)';
+                el.style.opacity = String(1 - Math.min(Math.abs(eff) / (w * 0.85), 1) * 0.55);
+
+                const prog = Math.max(-1, Math.min(1, -eff / w));
+                setNav(index + prog * 0.9, true);
+
+                const target = dx < 0 ? index + 1 : index - 1;
+                if (target >= 0 && target < tabs.length) {
+                    const armed = Math.abs(dx) > w * COMMIT_RATIO;
+                    showPeek(target, dx < 0 ? 'right' : 'left', Math.abs(dx) / (w * COMMIT_RATIO), armed);
+                } else hidePeek();
+            }
+
+            function onDown(e) {
+                if (e.pointerType === 'mouse' || !e.isPrimary) return;
+                if (e.clientX < EDGE_GUARD || e.clientX > window.innerWidth - EDGE_GUARD) return;
+                if (blocked(e.target)) return;
+                sw = { id: e.pointerId, x0: e.clientX, y0: e.clientY, state: 'pending', samples: [{ x: e.clientX, t: e.timeStamp }], w: Math.max(240, window.innerWidth), eff: 0 };
+            }
+            function onMove(e) {
+                if (!sw || e.pointerId !== sw.id) return;
+                const dx = e.clientX - sw.x0, dy = e.clientY - sw.y0;
+                if (sw.state === 'pending') {
+                    if (Math.abs(dx) < LOCK_PX && Math.abs(dy) < LOCK_PX) return;
+                    if (Math.abs(dx) > Math.abs(dy) * 1.35) {
+                        sw.state = 'drag';
+                        cancelAnims();
+                        document.documentElement.classList.add('is-swiping');
+                        try { const sel = window.getSelection && window.getSelection(); if (sel) sel.removeAllRanges(); } catch (err) { /* abaikan */ }
+                    } else { sw.state = 'ignore'; return; }
+                }
+                if (sw.state !== 'drag') return;
+                sw.samples.push({ x: e.clientX, t: e.timeStamp });
+                if (sw.samples.length > 8) sw.samples.shift();
+                sw.dx = dx;
+                applyDrag(dx);
+            }
+            function onUp(e) {
+                if (!sw || e.pointerId !== sw.id) return;
+                const s = sw;
+                sw = null;
+                if (s.state !== 'drag') return;
+                swallowUntil = performance.now() + 350;      // jangan teruskan "klik" setelah menggeser
+                finishDrag(s, e.type === 'pointercancel');
+            }
+
+            function finishDrag(s, cancelled) {
+                const dx = s.dx || 0;
+                const vx = vFromSamples(s);                  // px/ms, + = ke kanan
+                const el = tabs[index];
+                const dir = dx < 0 ? 1 : -1;                 // 1 = ke tab berikutnya
+                const target = index + dir;
+                const valid = target >= 0 && target < tabs.length;
+                const flick = Math.abs(vx) > FLICK_SPEED && Math.abs(dx) > 28 && Math.sign(vx) === Math.sign(dx);
+                const commit = !cancelled && valid && (Math.abs(dx) > s.w * COMMIT_RATIO || flick);
+                const fromTransform = el.style.transform || 'translate3d(0,0,0)';
+                const fromOpacity = Number(el.style.opacity || 1);
+                el.style.transform = '';
+                el.style.opacity = '';
+                document.documentElement.classList.remove('is-swiping');
+                hidePeek();
+
+                if (commit) {
+                    if (!canAnimate || reduceMotion()) { go(target, { dir: dir, instant: true }); return; }
+                    const out = trackAnim(el.animate(
+                        [{ transform: fromTransform, opacity: fromOpacity }, { transform: 'translate3d(' + (-dir * Math.min(s.w * 0.45, 170)) + 'px,0,0)', opacity: 0 }],
+                        { duration: 140, easing: 'ease-in', fill: 'forwards' }
+                    ));
+                    out.onfinish = () => go(target, { dir: dir });
+                } else {
+                    markActive(index);
+                    if (canAnimate && !reduceMotion()) {
+                        trackAnim(el.animate(
+                            [{ transform: fromTransform, opacity: fromOpacity }, { transform: 'translate3d(0,0,0)', opacity: 1 }],
+                            { duration: 320, easing: 'cubic-bezier(.2,.9,.3,1.15)' }
+                        ));
+                    }
+                }
+            }
+            function vFromSamples(s) {
+                const a = s.samples;
+                if (a.length < 2) return 0;
+                const last = a[a.length - 1];
+                let first = a[0];
+                for (let i = a.length - 1; i >= 0; i--) { if (last.t - a[i].t <= 120) first = a[i]; else break; }
+                const dt = last.t - first.t;
+                return dt > 0 ? (last.x - first.x) / dt : 0;
+            }
+
+            document.addEventListener('pointerdown', onDown, { passive: true });
+            document.addEventListener('pointermove', onMove, { passive: true });
+            document.addEventListener('pointerup', onUp, { passive: true });
+            document.addEventListener('pointercancel', onUp, { passive: true });
+            document.addEventListener('click', (e) => {
+                if (performance.now() < swallowUntil) { e.stopPropagation(); e.preventDefault(); }
+            }, true);
+
+            // Keyboard: panah kiri/kanan pada bilah navigasi
+            if (nav) {
+                nav.addEventListener('keydown', (e) => {
+                    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+                    const next = index + (e.key === 'ArrowRight' ? 1 : -1);
+                    if (next < 0 || next >= tabs.length) return;
+                    e.preventDefault();
+                    go(next);
+                    if (navBtns[next]) navBtns[next].focus();
+                });
+            }
+
+            markActive(index);
+            return {
+                go: go,
+                goById: (id) => { const i = tabs.findIndex((t) => t.id === id); if (i >= 0) go(i); },
+                index: () => index,
+                count: () => tabs.length
+            };
+        })();
+
+        function openTab(tabId, btn) { TabNav.goById(tabId); }
+
 
         function bukaLogbook() { window.open(GOOGLE_SHEET_URL, '_blank', 'noopener'); }
 
@@ -792,12 +1494,12 @@
         function addWaNumber() {
             const no = $('inpWaNumber').value.replace(/[^0-9]/g, '');
             if (!no || no.length < 10 || (!no.startsWith('62') && !no.startsWith('08'))) {
-                alert("Gunakan format 628xxx (minimal 10 digit).");
+                GentaAlert.fire({ icon: 'warning', title: 'Format nomor belum sesuai', text: 'Gunakan format 628xxx (minimal 10 digit).' });
                 return;
             }
             const finalNo = no.startsWith('0') ? "62" + no.substring(1) : no;
             if (waNumbers.includes(finalNo)) {
-                alert("Nomor tersebut sudah ada di dalam daftar!");
+                GentaAlert.fire({ icon: 'info', title: 'Nomor sudah terdaftar', text: 'Nomor ' + finalNo + ' sudah ada di dalam daftar penerima.' });
                 return;
             }
 
@@ -827,32 +1529,45 @@
                 payload.ai = $('valAiStatus').innerText || "Aman";
             }
 
+            GentaAlert.loading('Mendaftarkan nomor…', 'Menyimpan ke server dan mengirim pesan WhatsApp.');
             gasRequest(payload)
                 .then((res) => {
                     $('inpWaNumber').value = '';
                     waNumbers.push(finalNo);
                     renderWaList();
                     if (res && res.waSent === false) {
-                        alert("Nomor tersimpan, namun Fonnte gagal mengirim WA (" + (res.waReason || "cek device Fonnte") + ").");
+                        GentaAlert.fire({ icon: 'warning', title: 'Nomor tersimpan', text: 'Namun Fonnte gagal mengirim WA (' + (res.waReason || 'cek device Fonnte') + ').' });
                     } else {
-                        alert("Nomor WA terdaftar! Bot telah mengirim pesan sambutan dan status lahan terkini ke " + finalNo + ".");
+                        GentaAlert.fire({ icon: 'success', title: 'Nomor WA terdaftar!', text: 'Bot telah mengirim pesan sambutan dan status lahan terkini ke ' + finalNo + '.' });
                     }
                 })
                 .catch((err) => {
-                    alert("Gagal menambahkan nomor WA ke server (" + err.message + ").");
+                    GentaAlert.fire({ icon: 'error', title: 'Gagal menambahkan nomor', text: 'Nomor WA tidak dapat ditambahkan ke server (' + err.message + ').' });
                 });
         }
 
         function delWaNumber(no) {
-            if (!confirm("Hapus nomor " + no + " dari penerima peringatan hama?")) return;
-            gasRequest({ cmd: 'del_wa', no: no })
-                .then(() => {
-                    waNumbers = waNumbers.filter(n => n !== no);
-                    renderWaList();
-                })
-                .catch((err) => {
-                    alert("Gagal menghapus nomor WA dari server (" + err.message + ").");
-                });
+            GentaAlert.confirm({
+                icon: 'warning',
+                danger: true,
+                title: 'Hapus nomor ini?',
+                text: 'Nomor ' + no + ' tidak akan lagi menerima peringatan hama.',
+                confirmButtonText: 'Ya, hapus',
+                cancelButtonText: 'Batal'
+            }).then((ok) => {
+                if (!ok) return;
+                GentaAlert.loading('Menghapus nomor…');
+                gasRequest({ cmd: 'del_wa', no: no })
+                    .then(() => {
+                        waNumbers = waNumbers.filter(n => n !== no);
+                        renderWaList();
+                        GentaAlert.close();
+                        GentaAlert.toast({ icon: 'success', title: 'Nomor dihapus', text: no });
+                    })
+                    .catch((err) => {
+                        GentaAlert.fire({ icon: 'error', title: 'Gagal menghapus nomor', text: 'Nomor WA tidak dapat dihapus dari server (' + err.message + ').' });
+                    });
+            });
         }
 
         /* ---------- Profil kalibrasi ---------- */
@@ -874,13 +1589,23 @@
         }
 
         function addMicProfile() {
-            const db = parseInt(prompt("Minimal dB Ambang Batas:"), 10);
-            if (isNaN(db)) return;
-            const label = prompt("Identifikasi Suara / Nama Hama:");
-            if (label && label.trim()) {
-                micProfiles.push({ db: db, label: label.trim() });
+            GentaAlert.fire({
+                icon: 'info',
+                title: 'Tambah ambang batas mic',
+                text: 'Suara di atas nilai ini dikenali sebagai profil yang Anda beri nama.',
+                fields: [
+                    { name: 'db', type: 'number', label: 'Minimal dB ambang batas', placeholder: 'mis. 75', min: 0, max: 150, suffix: 'dB' },
+                    { name: 'label', type: 'text', label: 'Identifikasi suara / nama hama', placeholder: 'mis. Kepakan burung', maxLength: 40 }
+                ],
+                showCancelButton: true,
+                confirmButtonText: 'Simpan',
+                cancelButtonText: 'Batal'
+            }).then((r) => {
+                if (!r.isConfirmed) return;
+                micProfiles.push({ db: r.values.db, label: r.values.label });
                 saveProfiles();
-            }
+                GentaAlert.toast({ icon: 'success', title: 'Ambang batas ditambahkan', text: '> ' + r.values.db + ' dB • ' + r.values.label });
+            });
         }
         function delMicProfile(idx) { micProfiles.splice(idx, 1); saveProfiles(); }
 
@@ -909,13 +1634,23 @@
         }
 
         function addSpeakerTrack() {
-            const track = parseInt(prompt("Nomor Track MP3 (1, 2, ...):"), 10);
-            if (isNaN(track) || track < 1) return;
-            const label = prompt("Nama Audio:");
-            if (label && label.trim()) {
-                speakerTracks.push({ track: track, label: label.trim(), isAlarm: false });
+            GentaAlert.fire({
+                icon: 'info',
+                title: 'Tambah track speaker',
+                text: 'Nomor track sesuai urutan file MP3 pada kartu DFPlayer.',
+                fields: [
+                    { name: 'track', type: 'number', label: 'Nomor track MP3', placeholder: 'mis. 3', min: 1, max: 3000 },
+                    { name: 'label', type: 'text', label: 'Nama audio', placeholder: 'mis. Suara predator', maxLength: 40 }
+                ],
+                showCancelButton: true,
+                confirmButtonText: 'Simpan',
+                cancelButtonText: 'Batal'
+            }).then((r) => {
+                if (!r.isConfirmed) return;
+                speakerTracks.push({ track: r.values.track, label: r.values.label, isAlarm: false });
                 saveProfiles();
-            }
+                GentaAlert.toast({ icon: 'success', title: 'Track ditambahkan', text: 'Track ' + r.values.track + ' • ' + r.values.label });
+            });
         }
         function toggleAlarmMode(idx, checked) { speakerTracks[idx].isAlarm = checked; saveProfiles(); }
         function delSpeakerTrack(idx) { speakerTracks.splice(idx, 1); saveProfiles(); }
@@ -945,13 +1680,23 @@
         }
 
         function addRadarProfile() {
-            const nrg = parseInt(prompt("Nilai Energi Radar (0 - 100):"), 10);
-            if (isNaN(nrg) || nrg < 0 || nrg > 100) return;
-            const label = prompt("Identifikasi Objek:");
-            if (label && label.trim()) {
-                radarProfiles.push({ energy: nrg, label: label.trim(), exclude: false });
+            GentaAlert.fire({
+                icon: 'info',
+                title: 'Tambah profil radar',
+                text: 'Objek dengan energi di atas nilai ini dikenali sebagai profil yang Anda beri nama.',
+                fields: [
+                    { name: 'energy', type: 'number', label: 'Nilai energi radar (0 - 100)', placeholder: 'mis. 40', min: 0, max: 100 },
+                    { name: 'label', type: 'text', label: 'Identifikasi objek', placeholder: 'mis. Tikus', maxLength: 40 }
+                ],
+                showCancelButton: true,
+                confirmButtonText: 'Simpan',
+                cancelButtonText: 'Batal'
+            }).then((r) => {
+                if (!r.isConfirmed) return;
+                radarProfiles.push({ energy: r.values.energy, label: r.values.label, exclude: false });
                 saveProfiles();
-            }
+                GentaAlert.toast({ icon: 'success', title: 'Profil radar ditambahkan', text: 'Energi > ' + r.values.energy + ' • ' + r.values.label });
+            });
         }
         function toggleRadarExclude(idx, checked) { radarProfiles[idx].exclude = checked; saveProfiles(); }
         function delRadarProfile(idx) { radarProfiles.splice(idx, 1); saveProfiles(); }
@@ -988,18 +1733,31 @@
             calcHST();
         }
 
+        function confirmResetFase() {
+            return GentaAlert.confirm({
+                icon: 'warning',
+                danger: true,
+                title: 'Reset tanggal tanam?',
+                text: 'Tanggal tanam padi dan progres HST akan dihapus.',
+                confirmButtonText: 'Ya, reset',
+                cancelButtonText: 'Batal'
+            });
+        }
+
         function resetFaseTanam() {
-            if (confirm("Reset tanggal tanam padi?")) {
+            confirmResetFase().then((ok) => {
+                if (!ok) return;
                 $('plantDate').value = '';
                 lsRemove('plantDate');
                 $('hstValue').innerText = "- HST";
                 $('farmProgressFill').style.width = "0%";
-            }
+                GentaAlert.toast({ icon: 'success', title: 'Tanggal tanam direset' });
+            });
         }
 
         function forceSimpanManual() {
             const hst = $('hstValue').innerText.replace(/[^0-9]/g, '');
-            if (hst === "") { alert("Pilih tanggal tanam terlebih dahulu!"); return; }
+            if (hst === "") { GentaAlert.fire({ icon: 'warning', title: 'Tanggal tanam belum dipilih', text: 'Pilih tanggal tanam terlebih dahulu!' }); return; }
 
             const q = new URLSearchParams({
                 cmd: 'log',
@@ -1015,9 +1773,10 @@
                 radar: 0
             });
 
+            GentaAlert.loading('Mengirim log telemetri…', 'Menyimpan ke Google Sheets.');
             fetch(GAS_WEB_APP_URL + "?" + q.toString(), { mode: 'no-cors' })
-                .then(() => alert("Log telemetri terkirim ke Google Sheets!"))
-                .catch(() => alert("Gagal mengirim ke Google Sheets. Periksa koneksi internet."));
+                .then(() => GentaAlert.fire({ icon: 'success', title: 'Log terkirim', text: 'Log telemetri terkirim ke Google Sheets!', timer: 4500 }))
+                .catch(() => GentaAlert.fire({ icon: 'error', title: 'Gagal mengirim log', text: 'Gagal mengirim ke Google Sheets. Periksa koneksi internet.' }));
         }
 
         /* ---------- Sinyal seluler ---------- */
@@ -1082,6 +1841,22 @@
             }
         }, 3000);
 
+        // Toast perubahan status koneksi (hanya jika status bertahan >= 2 detik, agar tidak berkedip)
+        let cloudKind = null, cloudCand = null, cloudCandN = 0;
+        function notifyCloudState(kind) {
+            if (kind !== cloudCand) { cloudCand = kind; cloudCandN = 0; }
+            if (++cloudCandN !== 2 || kind === cloudKind) return;
+            const prev = cloudKind;
+            cloudKind = kind;
+            if (kind === 'connected') {
+                GentaAlert.toast({ icon: 'success', title: 'Terhubung ke Genta-IoT', text: 'Data realtime dari ESP32 aktif.', key: 'conn' });
+            } else if (prev === 'connected' && kind === 'disconnected') {
+                GentaAlert.toast({ icon: 'error', title: 'Koneksi terputus', text: 'Mencoba menghubungkan ulang…', key: 'conn', timer: 5000 });
+            } else if (prev === 'connected' && kind === 'warning') {
+                GentaAlert.toast({ icon: 'warning', title: 'Telemetri berhenti', text: 'Menunggu data baru dari ESP32…', key: 'conn', timer: 5000 });
+            }
+        }
+
         // Watchdog status
         setInterval(() => {
             const st = $('cloudStatus');
@@ -1095,7 +1870,9 @@
                 updateSensorBadge('badgeINA', false, "INA219");
                 updateSensorBadge('badgeMIC', false, "MIC I2S");
                 updateSensorBadge('badgeRAD', false, "RADAR 24GHz");
+                notifyCloudState('disconnected');
             } else if (Date.now() - lastESPTime > 6000) {
+                notifyCloudState('warning');
                 st.className = 'cloud-status-bar warning';
                 stText.innerText = "Genta-IoT Menunggu Data Telemetri...";
                 updateSensorBadge('badgeBME', false, "BME280");
@@ -1105,6 +1882,7 @@
             } else {
                 st.className = 'cloud-status-bar connected';
                 stText.innerText = "Genta-IoT Connected • Realtime Link Active";
+                notifyCloudState('connected');
             }
         }, 1000);
 
@@ -1406,7 +2184,24 @@
             tickLocalClock();
             fetchWaList();
             setInterval(tickLocalClock, 1000);
+            showSwipeHint();
         };
+
+        // Petunjuk sekali saja pada layar sentuh
+        function showSwipeHint() {
+            if (!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) return;
+            if (lsGet('swipeHintSeen')) return;
+            setTimeout(() => {
+                GentaAlert.toast({
+                    icon: 'info',
+                    title: 'Tips: geser untuk pindah halaman',
+                    text: 'Geser layar ke kiri atau kanan untuk berpindah tab.',
+                    timer: 5500,
+                    key: 'hint'
+                });
+                lsSet('swipeHintSeen', '1');
+            }, 1500);
+        }
 /* ===== Header Compact on Scroll ===== */
         (function () {
             var hdr = document.querySelector('.header');
@@ -1532,23 +2327,27 @@
             }).catch(() => {});
         };
         window.resetFaseTanam = function () {
-            if (!confirm("Reset tanggal tanam padi?")) return;
-            $('plantDate').value = '';
-            lsRemove('plantDate');
-            $('hstValue').innerText = "- HST";
-            $('farmProgressFill').style.width = "0%";
+            confirmResetFase().then((ok) => {
+                if (!ok) return;
+                $('plantDate').value = '';
+                lsRemove('plantDate');
+                $('hstValue').innerText = "- HST";
+                $('farmProgressFill').style.width = "0%";
+                GentaAlert.toast({ icon: 'success', title: 'Tanggal tanam direset' });
 
-            gasRequest({
-                cmd: "save_config",
-                plantDate: "",
-                hst: "-",
-                conn: isHardwareConnected() ? "CONNECTED" : "DISCONNECTED"
-            }).catch(() => {});
+                gasRequest({
+                    cmd: "save_config",
+                    plantDate: "",
+                    hst: "-",
+                    conn: isHardwareConnected() ? "CONNECTED" : "DISCONNECTED"
+                }).catch(() => {});
+            });
         };
         window.forceSimpanManual = function () {
+            GentaAlert.loading('Menyimpan ke Google Sheets…', 'Mengirim data telemetri & status koneksi.');
             syncDatabaseAndStatus(true)
-                .then(() => alert("Data telemetri & status koneksi berhasil diverifikasi tersimpan di Google Sheets!"))
-                .catch((err) => alert("Gagal mengirim log ke Google Sheets (" + err.message + "). Periksa koneksi internet."));
+                .then(() => GentaAlert.fire({ icon: 'success', title: 'Tersimpan di Google Sheets', text: 'Data telemetri & status koneksi berhasil diverifikasi tersimpan.', timer: 4500 }))
+                .catch((err) => GentaAlert.fire({ icon: 'error', title: 'Gagal mengirim log', text: 'Gagal mengirim log ke Google Sheets (' + err.message + '). Periksa koneksi internet.' }));
         };
         function loadConfigFromDatabase() {
             fetch(GAS_WEB_APP_URL + "?cmd=get_config")

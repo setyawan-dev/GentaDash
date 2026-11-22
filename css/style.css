@@ -1,4 +1,4 @@
-        :root {
+:root {
             /* Palet utama: #7b1e3a  #f4efe6  #3563e9  #b8d94e */
             --wine: #7b1e3a;
             --blue: #3563e9;
@@ -1150,3 +1150,349 @@
         .header.was-compact:not(.is-compact) > * { animation: hdrSwapBack 0.22s ease; }
         @keyframes hdrSwapIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes hdrSwapBack { from { opacity: 0; } to { opacity: 1; } }
+
+        /* =====================================================================
+           GESER ANTAR HALAMAN (SWIPE) + TRANSISI TAB + INDIKATOR NAV GESER
+           ===================================================================== */
+        /* gulir vertikal tetap milik peramban; gerak mendatar dikelola oleh JS */
+        body { touch-action: pan-y pinch-zoom; }
+        @supports (overflow: clip) { .container { overflow-x: clip; } }
+
+        /* animasi masuk tab kini diatur dari JS (mengikuti arah geser) */
+        .tab-content.active { animation: none; }
+
+        /* kartu muncul bertahap, sangat halus (hanya saat tab dibuka) */
+        .tab-content.active > * { animation: tabCardRise 0.32s cubic-bezier(0.22, 0.9, 0.3, 1) backwards; }
+        .tab-content.active > *:nth-child(2) { animation-delay: 0.04s; }
+        .tab-content.active > *:nth-child(3) { animation-delay: 0.08s; }
+        .tab-content.active > *:nth-child(4) { animation-delay: 0.12s; }
+        .tab-content.active > *:nth-child(5) { animation-delay: 0.16s; }
+        .tab-content.active > *:nth-child(n+6) { animation-delay: 0.2s; }
+        @keyframes tabCardRise { from { opacity: 0; transform: translate3d(0, 8px, 0); } to { opacity: 1; transform: none; } }
+
+        html.is-swiping, html.is-swiping body { -webkit-user-select: none; user-select: none; }
+        html.is-swiping .tab-content.active { will-change: transform, opacity; }
+
+        /* --- Indikator geser pada bilah navigasi (menggantikan kotak aktif statis) --- */
+        .bottom-nav .nav-pill {
+            position: absolute;
+            top: 6px;
+            bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+            left: 8px;
+            width: calc((100% - 16px - (var(--nav-n, 6) - 1) * 2px) / var(--nav-n, 6));
+            border-radius: 14px;
+            background: var(--lime-bg);
+            border: 1px solid var(--lime-line);
+            transform: translate3d(calc(var(--nav-idx, 0) * (100% + 2px)), 0, 0);
+            transition: transform 0.34s cubic-bezier(0.22, 0.9, 0.3, 1);
+            pointer-events: none;
+            z-index: 0;
+            will-change: transform;
+        }
+        .bottom-nav .nav-pill::after {
+            content: '';
+            position: absolute;
+            top: -7px; left: 50%;
+            width: 22px; height: 3px;
+            margin-left: -11px;
+            border-radius: 0 0 4px 4px;
+            background: var(--lime-fill);
+        }
+        .bottom-nav.is-dragging .nav-pill { transition: none; }
+        .bottom-nav .nav-btn { z-index: 1; }
+        .bottom-nav .nav-btn.active { background: transparent; }
+        .bottom-nav .nav-btn::after,
+        .bottom-nav .nav-btn.active::after { display: none; }
+        .bottom-nav .nav-btn svg { transition: transform 0.25s cubic-bezier(0.22, 0.9, 0.3, 1), stroke 0.2s; }
+        .bottom-nav .nav-btn.active svg { transform: translateY(-1px) scale(1.08); }
+
+        /* --- Petunjuk tujuan halaman saat menggeser --- */
+        .swipe-peek {
+            position: fixed;
+            top: 46%;
+            z-index: 950;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border-radius: var(--radius-full);
+            background: var(--bg-card);
+            border: 1px solid var(--border-strong);
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 700;
+            box-shadow: 0 8px 22px var(--ov-mid);
+            opacity: 0;
+            pointer-events: none;
+            transform: translate3d(calc((1 - var(--sp, 0)) * var(--sp-dir, 1) * 22px), 0, 0) scale(calc(0.86 + var(--sp, 0) * 0.14));
+            transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+        }
+        .swipe-peek[data-side="right"] { right: 10px; --sp-dir: 1; }
+        .swipe-peek[data-side="left"] { left: 10px; --sp-dir: -1; }
+        .swipe-peek.show { opacity: var(--sp, 0); }
+        .swipe-peek:not(.show) { transition: opacity 0.15s; }
+        .swipe-peek .sp-ico { display: inline-flex; }
+        .swipe-peek .sp-ico svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; }
+        .swipe-peek.armed { background: var(--lime-fill); border-color: var(--lime-fill); color: var(--lime-ink); }
+
+        /* =====================================================================
+           GentaAlert — pop-up bergaya SweetAlert (dialog + toast) ber-logo
+           ===================================================================== */
+        :root { --ga-shadow: rgba(0, 0, 0, 0.5); }
+        :root[data-theme="light"] { --ga-shadow: rgba(52, 30, 40, 0.28); }
+
+        .ga-type-success  { --ga-c: var(--lime-fill); --ga-ink: var(--lime-ink); --ga-soft: var(--lime-bg); --ga-line: var(--lime-line); --ga-edge: var(--lime-fill); }
+        .ga-type-error    { --ga-c: var(--wine);      --ga-ink: var(--cream);    --ga-soft: var(--wine-bg); --ga-line: var(--wine-line); --ga-edge: var(--wine-soft); }
+        .ga-type-warning  { --ga-c: var(--warn);      --ga-ink: #2b2208;         --ga-soft: var(--warn-bg); --ga-line: var(--warn-line); --ga-edge: var(--warn); }
+        :root[data-theme="light"] .ga-type-warning { --ga-ink: var(--cream); }
+        .ga-type-info, .ga-type-question { --ga-c: var(--blue); --ga-ink: #ffffff; --ga-soft: var(--blue-bg); --ga-line: var(--blue-line); --ga-edge: var(--blue-soft); }
+
+        .ga-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 3000;
+            display: flex;
+            padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            touch-action: pan-y;
+            background: var(--overlay);
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
+            animation: gaFade 0.2s ease-out;
+        }
+        .ga-dialog {
+            position: relative;
+            margin: auto;
+            width: 100%;
+            max-width: 372px;
+            padding: 0 20px 18px;
+            overflow: hidden;
+            text-align: center;
+            background: var(--bg-card);
+            border: 1px solid var(--border-strong);
+            border-radius: 22px;
+            box-shadow: 0 24px 60px var(--ga-shadow);
+            outline: none;
+            animation: gaPop 0.32s cubic-bezier(0.2, 0.9, 0.3, 1.18);
+        }
+        .ga-accent {
+            height: 4px;
+            margin: 0 -20px;
+            background: linear-gradient(90deg, var(--wine) 0%, var(--blue) 38%, var(--lime) 72%, var(--cream) 100%);
+        }
+        .ga-close {
+            position: absolute;
+            top: 12px; right: 12px;
+            z-index: 3;
+            width: 30px; height: 30px;
+            border: none;
+            border-radius: 50%;
+            background: var(--ov-mid);
+            color: var(--text-muted);
+            font-size: 13px;
+            cursor: pointer;
+            transition: background-color 0.15s, color 0.15s;
+        }
+        .ga-close:hover { background: var(--ov-strong); color: var(--text-main); }
+
+        /* logo + lencana status */
+        .ga-hero { display: flex; justify-content: center; padding: 22px 0 8px; }
+        .ga-logo-wrap { position: relative; width: 92px; height: 92px; display: flex; align-items: center; justify-content: center; }
+        .ga-logo {
+            position: relative;
+            z-index: 1;
+            width: 78px; height: 78px;
+            object-fit: contain;
+            filter: drop-shadow(0 4px 12px var(--logo-glow));
+            -webkit-user-drag: none;
+            user-select: none;
+            animation: gaLogoIn 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.2) backwards;
+        }
+        .ga-glow {
+            position: absolute;
+            inset: -8px;
+            border-radius: 50%;
+            background: radial-gradient(closest-side, var(--ga-soft) 0%, transparent 72%);
+            animation: gaGlow 0.8s ease-out backwards;
+        }
+        .ga-ring {
+            position: absolute;
+            inset: 4px;
+            border-radius: 50%;
+            border: 1.5px solid var(--ga-line);
+            opacity: 0;
+            animation: gaRing 0.9s 0.15s ease-out backwards;
+        }
+        .ga-badge {
+            position: absolute;
+            right: -2px; bottom: 0;
+            z-index: 2;
+            width: 32px; height: 32px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 50%;
+            background: var(--ga-c);
+            color: var(--ga-ink);
+            border: 1.5px solid var(--ga-line);
+            box-shadow: 0 0 0 3px var(--bg-card), 0 4px 10px rgba(0, 0, 0, 0.28);
+            animation: gaBadge 0.42s 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.5) backwards;
+        }
+        .ga-badge svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+        .ga-badge .ga-draw { stroke-dasharray: 1; stroke-dashoffset: 0; animation: gaDraw 0.38s 0.36s ease-out backwards; }
+        .ga-badge .ga-dot { fill: currentColor; stroke: none; animation: gaFadeIn 0.2s 0.5s backwards; }
+
+        .ga-title { margin: 6px 0 0; font-size: 18px; font-weight: 800; letter-spacing: 0.2px; line-height: 1.25; color: var(--text-main); }
+        .ga-text { margin-top: 8px; font-size: 12.5px; line-height: 1.55; color: var(--text-muted); white-space: pre-line; word-break: break-word; }
+        .ga-text b { color: var(--text-main); }
+
+        /* isian formulir */
+        .ga-form { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; }
+        .ga-field { display: flex; flex-direction: column; gap: 5px; }
+        .ga-field-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; color: var(--text-muted); }
+        .ga-field-box { position: relative; display: flex; align-items: center; }
+        .ga-dialog .ga-input {
+            width: 100%;
+            padding: 11px 13px;
+            font-size: 14px;
+            color: var(--text-main);
+            background: var(--bg-input);
+            border: 1px solid var(--border-subtle);
+            border-radius: 12px;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .ga-dialog .ga-input.ga-has-suffix { padding-right: 42px; }
+        .ga-dialog .ga-input:focus { border-color: var(--blue-soft); box-shadow: 0 0 0 3px var(--blue-bg); }
+        .ga-dialog .ga-input[aria-invalid="true"] { border-color: var(--wine-soft); box-shadow: 0 0 0 3px var(--wine-bg); }
+        .ga-dialog .ga-input::placeholder { color: var(--text-dim); }
+        .ga-dialog .ga-input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+        .ga-dialog .ga-input[type="number"]::-webkit-outer-spin-button,
+        .ga-dialog .ga-input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .ga-suffix { position: absolute; right: 13px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); pointer-events: none; }
+        .ga-error {
+            display: none;
+            margin-top: 10px;
+            padding: 8px 11px;
+            border-radius: 10px;
+            background: var(--wine-bg);
+            border: 1px solid var(--wine-line);
+            color: var(--wine-soft);
+            font-size: 11.5px;
+            font-weight: 600;
+            text-align: left;
+        }
+        .ga-error.show { display: block; }
+
+        /* tombol */
+        .ga-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+        .ga-btn {
+            flex: 1 1 120px;
+            min-height: 44px;
+            padding: 10px 16px;
+            border-radius: 13px;
+            border: 1px solid var(--border-strong);
+            background: var(--ov-soft);
+            color: var(--text-main);
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background-color 0.15s, border-color 0.15s, transform 0.1s, filter 0.15s;
+        }
+        .ga-btn:hover { background: var(--ov-mid); }
+        .ga-btn:active { transform: scale(0.97); }
+        .ga-btn:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; }
+        .ga-btn.ga-confirm { background: var(--lime-fill); border-color: var(--lime-fill); color: var(--lime-ink); }
+        .ga-btn.ga-confirm:hover { background: var(--lime-fill); filter: brightness(1.07); }
+        .ga-danger .ga-btn.ga-confirm { background: var(--wine); border-color: var(--wine-soft); color: var(--cream); }
+        .ga-danger .ga-btn.ga-confirm:hover { background: var(--wine); filter: brightness(1.18); }
+        .ga-btn.ga-deny { background: var(--wine-bg); border-color: var(--wine-line); color: var(--wine-soft); }
+
+        /* bilah waktu otomatis tutup */
+        .ga-timer { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--ov-soft); }
+        .ga-timer i { display: block; height: 100%; background: var(--ga-c); transform-origin: left center; animation: gaTimer linear forwards; }
+
+        /* keadaan "memproses" */
+        .ga-loading .ga-ring { inset: -2px; opacity: 1; border: 3px solid var(--ov-mid); border-top-color: var(--lime-fill); animation: gaSpin 0.9s linear infinite; }
+        .ga-loading .ga-glow { background: radial-gradient(closest-side, var(--lime-bg) 0%, transparent 72%); }
+
+        .ga-shake { animation: gaShake 0.36s ease-in-out; }
+        .ga-overlay.ga-out { animation: gaFadeOut 0.17s ease-in forwards; }
+        .ga-overlay.ga-out .ga-dialog { animation: gaPopOut 0.17s ease-in forwards; }
+        .ga-overlay.ga-instant, .ga-overlay.ga-instant * { animation: none !important; }
+
+        /* ---- Toast ---- */
+        .ga-toasts {
+            position: fixed;
+            left: 0; right: 0;
+            bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+            z-index: 2500;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 0 14px;
+            pointer-events: none;
+        }
+        .ga-toast {
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            width: 100%;
+            max-width: 380px;
+            padding: 10px 34px 10px 10px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-strong);
+            border-left: 4px solid var(--ga-edge);
+            border-radius: 14px;
+            box-shadow: 0 10px 28px var(--ga-shadow);
+            pointer-events: auto;
+            touch-action: pan-y;
+            cursor: grab;
+            animation: gaToastIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.1) backwards;
+        }
+        .ga-toast.is-dragging { cursor: grabbing; transition: none; }
+        .ga-toast.ga-toast-out { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.97); transition: opacity 0.2s, transform 0.2s; }
+        .ga-toast-logo { position: relative; width: 40px; height: 40px; flex-shrink: 0; }
+        .ga-toast .ga-logo { width: 40px; height: 40px; animation: none; pointer-events: none; }
+        .ga-toast .ga-badge { width: 17px; height: 17px; right: -5px; bottom: -3px; border-width: 1px; box-shadow: 0 0 0 2px var(--bg-card); animation-delay: 0.1s; }
+        .ga-toast .ga-badge svg { width: 10px; height: 10px; stroke-width: 3.4; }
+        .ga-toast-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; text-align: left; }
+        .ga-toast-body b { font-size: 12.5px; font-weight: 700; color: var(--text-main); line-height: 1.3; }
+        .ga-toast-body span { font-size: 11.5px; line-height: 1.4; color: var(--text-muted); word-break: break-word; }
+        .ga-toast-x {
+            position: absolute;
+            top: 6px; right: 6px;
+            width: 22px; height: 22px;
+            border: none;
+            border-radius: 50%;
+            background: transparent;
+            color: var(--text-dim);
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .ga-toast-x:hover { background: var(--ov-mid); color: var(--text-main); }
+        .ga-toast-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2.5px; background: var(--ga-edge); opacity: 0.85; transform-origin: left center; animation: gaTimer linear forwards; }
+        .ga-toast.is-held .ga-toast-bar { animation-play-state: paused; }
+
+        @keyframes gaFade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes gaFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes gaFadeOut { to { opacity: 0; } }
+        @keyframes gaPop { from { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.92); } to { opacity: 1; transform: none; } }
+        @keyframes gaPopOut { to { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.96); } }
+        @keyframes gaLogoIn { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: none; } }
+        @keyframes gaGlow { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
+        @keyframes gaRing { from { opacity: 0.8; transform: scale(0.8); } to { opacity: 0; transform: scale(1.28); } }
+        @keyframes gaBadge { from { opacity: 0; transform: scale(0) rotate(-40deg); } to { opacity: 1; transform: none; } }
+        @keyframes gaDraw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+        @keyframes gaTimer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+        @keyframes gaSpin { to { transform: rotate(360deg); } }
+        @keyframes gaShake { 10%, 90% { transform: translate3d(-1px, 0, 0); } 20%, 80% { transform: translate3d(2px, 0, 0); } 30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } 40%, 60% { transform: translate3d(4px, 0, 0); } }
+        @keyframes gaToastIn { from { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.96); } to { opacity: 1; transform: none; } }
+
+        @media (max-width: 360px) {
+            .ga-dialog { padding-left: 16px; padding-right: 16px; }
+            .ga-accent { margin: 0 -16px; }
+            .ga-title { font-size: 16.5px; }
+        }
