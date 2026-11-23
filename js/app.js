@@ -1426,9 +1426,11 @@
         }
 
         function fetchWaList() {
-            fetch(GAS_WEB_APP_URL + "?cmd=get_wa")
-                .then(res => res.json())
-                .then(data => { waNumbers = data; renderWaList(); })
+            gasRequest({ cmd: "get_wa" })
+                .then(data => {
+                    waNumbers = Array.isArray(data) ? data : [];
+                    renderWaList();
+                })
                 .catch(e => {
                     console.log("Gagal fetch WA list", e);
                     $('waListContainer').innerHTML = `<div style="font-size:10px; color:var(--wine-soft); text-align:center; padding:10px;">Gagal memuat dari Google. Coba lagi.</div>`;
@@ -1804,11 +1806,14 @@
             }
         }
 
-        /* ---------- MQTT ---------- */
+        /* ---------- MQTT Lintas Jaringan ---------- */
         const broker = "broker.hivemq.com";
-        const clientId = "GentaWeb_" + Math.random().toString(16).substr(2, 8);
-        const topic_telemetry = "genta/unesa/telemetry";
-        const topic_command = "genta/unesa/command";
+        const clientId = "GentaWeb_" + Date.now().toString(36) + "_" + Math.random().toString(16).substr(2, 6);
+        const topic_telemetry   = "genta/unesa/telemetry";
+        const topic_command     = "genta/unesa/command";
+        const topic_console_req = "genta/unesa/console";
+        const topic_console_res = "genta/unesa/console_reply";
+
         const mqttLibMissing = (typeof Paho === 'undefined');
         const client = mqttLibMissing
             ? { isConnected: () => false, connect() {}, send() {}, subscribe() {} }
@@ -1822,13 +1827,21 @@
         let totalPackets = 0;
         let mqttConnecting = false;
         let reconnectTimer = null;
+        let reconnectDelay = 2000;
+        let remoteLogSeq = 0;
 
         function scheduleReconnect(delay) {
             clearTimeout(reconnectTimer);
-            reconnectTimer = setTimeout(initMQTT, delay || 2500);
+            const wait = delay || reconnectDelay;
+            reconnectTimer = setTimeout(initMQTT, wait);
+            reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
         }
 
-        // Ping heartbeat
+        function openRemoteConsole() {
+            window.open("remote_console.html", "_blank", "noopener");
+        }
+
+        // Ping heartbeat + sinkronisasi log serial lintas jaringan
         setInterval(() => {
             if (client.isConnected()) {
                 const now = Date.now();
@@ -1838,10 +1851,20 @@
                 const message = new Paho.MQTT.Message(JSON.stringify({ cmd: "ping", val: pingId }));
                 message.destinationName = topic_command;
                 client.send(message);
+
+                // Tarik log serial baru dari ESP32 jika tab sedang aktif
+                if (!document.hidden && lastESPTime > 0 && (now - lastESPTime < 10000)) {
+                    const logReq = new Paho.MQTT.Message(JSON.stringify({
+                        rid: pingId,
+                        action: "telemetry",
+                        since: remoteLogSeq
+                    }));
+                    logReq.destinationName = topic_console_req;
+                    client.send(logReq);
+                }
             }
         }, 3000);
 
-        // Toast perubahan status koneksi (hanya jika status bertahan >= 2 detik, agar tidak berkedip)
         let cloudKind = null, cloudCand = null, cloudCandN = 0;
         function notifyCloudState(kind) {
             if (kind !== cloudCand) { cloudCand = kind; cloudCandN = 0; }
@@ -1849,7 +1872,7 @@
             const prev = cloudKind;
             cloudKind = kind;
             if (kind === 'connected') {
-                GentaAlert.toast({ icon: 'success', title: 'Terhubung ke Genta-IoT', text: 'Data realtime dari ESP32 aktif.', key: 'conn' });
+                GentaAlert.toast({ icon: 'success', title: 'Terhubung ke Genta-IoT', text: 'Link MQTT lintas jaringan aktif.', key: 'conn' });
             } else if (prev === 'connected' && kind === 'disconnected') {
                 GentaAlert.toast({ icon: 'error', title: 'Koneksi terputus', text: 'Mencoba menghubungkan ulang…', key: 'conn', timer: 5000 });
             } else if (prev === 'connected' && kind === 'warning') {
@@ -1857,7 +1880,6 @@
             }
         }
 
-        // Watchdog status
         setInterval(() => {
             const st = $('cloudStatus');
             const stText = $('cloudStatusText');
@@ -1881,7 +1903,7 @@
                 updateSensorBadge('badgeRAD', false, "RADAR 24GHz");
             } else {
                 st.className = 'cloud-status-bar connected';
-                stText.innerText = "Genta-IoT Connected • Realtime Link Active";
+                stText.innerText = "Genta-IoT Connected • Cloud Link Active";
                 notifyCloudState('connected');
             }
         }, 1000);
@@ -1891,6 +1913,30 @@
         }
 
         client.onMessageArrived = function (message) {
+            if (message.destinationName === topic_console_res) {
+                try {
+                    const env = JSON.parse(message.payloadString);
+                    if (env && env.data) {
+                        if (typeof env.data.last_seq === 'number' && env.data.last_seq > remoteLogSeq) {
+                            remoteLogSeq = env.data.last_seq;
+                        }
+                        if (Array.isArray(env.data.logs)) {
+                            env.data.logs.forEach((entry) => {
+                                if (!entry) return;
+                                if (typeof entry.seq === 'number' && entry.seq > remoteLogSeq) {
+                                    remoteLogSeq = entry.seq;
+                                }
+                                const line = entry.text || entry.m;
+                                if (line) appendWebSerial(line);
+                            });
+                        } else if (env.data.msg) {
+                            appendWebSerial(env.data.msg);
+                        }
+                    }
+                } catch (e) { /* abaikan paket korup */ }
+                return;
+            }
+
             if (message.destinationName !== topic_telemetry) return;
 
             let data;
@@ -1911,8 +1957,6 @@
                 return;
             }
 
-            appendWebSerial(`[MQTT RX] sq:${data.sq || 0} t:${data.t || 0}C h:${data.h || 0}% v:${data.v_bus || 0}V snd:${data.snd || 0}dB ai:${data.ai_s || "N/A"}`);
-
             const t = toNum(data.t), h = toNum(data.h), p = toNum(data.p), alt = toNum(data.alt);
             const v = toNum(data.v_bus), c = toNum(data.c), pwr = toNum(data.pw);
             const snd = toNum(data.snd);
@@ -1921,10 +1965,8 @@
             const ai_str = data.ai_s || "--";
             const ai_val = toNum(data.ai_v) || 0;
 
-            // Suara terbaru dipakai oleh logika aktuator
             if (!actuatorState.simulationActive) lastSound = (snd !== null && snd > 15) ? snd : 0;
 
-            // Data radar (diabaikan saat mode simulasi supaya demo tidak tertimpa)
             let isRadarUpdated = false;
             if (!actuatorState.simulationActive) {
                 if (Array.isArray(data.radars)) {
@@ -1954,7 +1996,6 @@
 
             lastESPTime = Date.now();
 
-            // Packet loss
             if (data.sq !== undefined) {
                 const seq = Number(data.sq);
                 totalPackets++;
@@ -1967,6 +2008,7 @@
                         lostPackets = 0;
                         totalPackets = 1;
                         hwUv = null;
+                        remoteLogSeq = 0;
                         if (actuatorState.isManual) {
                             syncManualModeUI(false, false);
                             if ($('chkUv')) $('chkUv').checked = false;
@@ -1979,7 +2021,6 @@
                 $('cellLoss').innerText = ((lostPackets / totalPackets) * 100).toFixed(1) + "%";
             }
 
-            // RTC dari ESP32
             if (data.rtc_time) {
                 lastRtcFromESP = Date.now();
                 const parts = String(data.rtc_time).split(" ");
@@ -2000,7 +2041,7 @@
             updateSensorBadge('badgeINA', inaOk, "INA219");
             updateSensorBadge('badgeMIC', snd !== null && snd > 15, "MIC I2S");
             updateSensorBadge('badgeRAD', data.r_id !== undefined || !!data.radars, "RADAR 24GHz");
-            updateCellularWidget(sig, data.net || "4G LTE");
+            updateCellularWidget(sig, data.net || "Wi-Fi");
             updateWeatherWidget(data);
             $('valTemp').innerText = bmeOk ? t.toFixed(1) : "--";
             $('valHum').innerText = validReading(h) ? h.toFixed(1) : "--";
@@ -2017,7 +2058,6 @@
             aiEl.style.color = aiSafe ? "var(--lime-fg)" : "var(--wine-soft)";
             $('valUptime').innerText = `${Math.floor(up / 3600)}h ${Math.floor((up % 3600) / 60)}m ${Math.floor(up % 60)}s`;
 
-            // VPD
             let vpd = null;
             if (bmeOk && h !== null) {
                 const svp = 0.61078 * Math.exp((17.27 * t) / (t + 237.3));
@@ -2025,7 +2065,6 @@
             }
             $('valVpd').innerText = vpd !== null ? vpd.toFixed(2) : "--";
 
-            // Mic
             const sndOk = snd !== null && snd > 15;
             if (!actuatorState.simulationActive) $('valSound').innerText = sndOk ? snd.toFixed(1) : "--";
             let micClass = "Normal";
@@ -2042,6 +2081,7 @@
             }
             $('valMicClass').innerText = micClass;
             $('valMicClass').style.color = isLoudAlarm ? "var(--wine-soft)" : "var(--text-muted)";
+
             const now = new Date();
             const timeStr = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, '0')).join(":");
             if (histLabels.length >= maxDataPoints) {
@@ -2062,15 +2102,17 @@
 
             if (activeChartKey !== '' && chartInstance !== null) chartInstance.update();
 
-            // Status aktuator dari firmware
+            // Sinkronisasi status manual & aktuator dari firmware
             if (data.manual !== undefined) {
                 const fwManual = (data.manual === 1 || data.manual === true);
                 if (fwManual !== actuatorState.isManual) {
                     syncManualModeUI(fwManual, false);
                 }
             }
+            if (data.uv !== undefined) {
+                hwUv = (data.uv === 1 || data.uv === true);
+            }
 
-            // Evaluasi ulang (satu kali per paket)
             if (isRadarUpdated) updateSectorDisplay();
             else checkActuatorsSchedule();
             syncFarmSummary();
@@ -2080,7 +2122,6 @@
             mqttConnecting = false;
             expectedSeq = -1;
             if (responseObject.errorCode !== 0) {
-                console.log("Koneksi MQTT terputus:", responseObject.errorMessage);
                 $('cloudStatus').className = 'cloud-status-bar disconnected';
                 $('cloudStatusText').innerText = "Genta-IoT Disconnected";
                 scheduleReconnect(2000);
@@ -2096,23 +2137,23 @@
                     useSSL: true,
                     cleanSession: true,
                     keepAliveInterval: 30,
+                    timeout: 10,
                     onSuccess: () => {
                         mqttConnecting = false;
-                        console.log("MQTT Broker Connected");
+                        reconnectDelay = 2000;
                         $('cloudStatus').className = 'cloud-status-bar connected';
-                        $('cloudStatusText').innerText = "Genta-IoT Connected • Realtime Link Active";
+                        $('cloudStatusText').innerText = "Genta-IoT Connected • Cloud Link Active";
                         client.subscribe(topic_telemetry);
+                        client.subscribe(topic_console_res);
                     },
-                    onFailure: (e) => {
+                    onFailure: () => {
                         mqttConnecting = false;
-                        console.log("Failed connect MQTT. Trying...", e);
-                        scheduleReconnect(2500);
+                        scheduleReconnect();
                     }
                 });
             } catch (err) {
                 mqttConnecting = false;
-                console.log("MQTT connect error:", err);
-                scheduleReconnect(2500);
+                scheduleReconnect();
             }
         }
 
@@ -2350,8 +2391,7 @@
                 .catch((err) => GentaAlert.fire({ icon: 'error', title: 'Gagal mengirim log', text: 'Gagal mengirim log ke Google Sheets (' + err.message + '). Periksa koneksi internet.' }));
         };
         function loadConfigFromDatabase() {
-            fetch(GAS_WEB_APP_URL + "?cmd=get_config")
-                .then((res) => res.json())
+            gasRequest({ cmd: "get_config" })
                 .then((cfg) => {
                     if (cfg && cfg.plantDate) {
                         if ($('plantDate').value !== cfg.plantDate) {
@@ -2374,8 +2414,7 @@
             if (isPollingWa) return;
             isPollingWa = true;
 
-            fetch(GAS_WEB_APP_URL + "?cmd=get_cmd_web")
-                .then((res) => res.json())
+            gasRequest({ cmd: "get_cmd_web" })
                 .then((res) => {
                     const waCmd = res && res.cmd ? String(res.cmd).toUpperCase().trim() : "NONE";
                     if (!waCmd || waCmd === "NONE") return;
